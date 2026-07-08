@@ -45,8 +45,6 @@
   "group/center4": {
 	"orientation": "inherit",
 	"modules": [
-    "custom/active_window",
-    "custom/separator#blank",
     "sway/workspaces",
     "custom/separator#blank",
     "network",
@@ -70,12 +68,6 @@
     "on-click": "$HOME/.config/waybar/scripts/power-menu.sh"
     },
 
-  "custom/active_window": {
-    "exec": "~/.config/waybar/window.sh",
-    "return-type": "json",
-    "markup": true
-  },
-  
   "sway/workspaces": {
     "on-click": "activate",
     "format": "{icon}",

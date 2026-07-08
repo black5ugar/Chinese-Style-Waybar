@@ -185,7 +185,7 @@ ShellRoot {
                     anchors.left: seal.right
                     anchors.leftMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "水墨便箋"
+                    text: "片刻"
                     color: root.ink
                     font.family: root.zhFont
                     font.pixelSize: 17

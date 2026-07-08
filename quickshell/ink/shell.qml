@@ -86,6 +86,116 @@ ShellRoot {
         function toggle(): void { root.panelOpen = !root.panelOpen }
     }
 
+    // ═══ 天时:Open-Meteo · 十分钟一候 ═══
+    // wxAuto = true 时按 IP 自动定位(城市级精度,挂 VPN 会定到出口节点);
+    // 定位失败或 wxAuto = false 时,使用下面手填的坐标与地名
+    property bool wxAuto: true
+    property real wxLat: 52.51
+    property real wxLon: 5.47
+    property string wxPlace: "莱利斯塔德"
+
+    QtObject {
+        id: wx
+        property bool ok: false
+        property bool loading: true
+        property int temp: 0
+        property int code: 0
+        property int humidity: 0
+        property int wind: 0
+        property int nowIdx: 0
+        property var temps: []
+        property var updated: new Date()
+    }
+
+    function wxDesc(c) {
+        if (c === 0) return "晴";
+        if (c === 1) return "晴间多云";
+        if (c === 2) return "多云";
+        if (c === 3) return "阴";
+        if (c === 45 || c === 48) return "雾";
+        if (c >= 51 && c <= 57) return "细雨";
+        if (c === 61 || c === 66) return "小雨";
+        if (c === 63) return "中雨";
+        if (c === 65 || c === 67) return "大雨";
+        if (c === 71) return "小雪";
+        if (c === 73) return "中雪";
+        if (c === 75 || c === 77) return "大雪";
+        if (c >= 80 && c <= 82) return "阵雨";
+        if (c === 85 || c === 86) return "阵雪";
+        if (c >= 95) return "雷雨";
+        return "未知";
+    }
+
+    // 时辰:更新时间以「巳时」「亥时」记
+    function shichen(d) {
+        const n = ["子","丑","寅","卯","辰","巳","午","未","申","酉","戌","亥"];
+        return n[Math.floor(((d.getHours() + 1) % 24) / 2)] + "时";
+    }
+
+    // IP 定位:启动时与每 6 小时一次;成功后刷新天气
+    function fetchLocation() {
+        if (!root.wxAuto) { root.fetchWeather(); return; }
+        const xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = () => {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return;
+            if (xhr.status === 200) {
+                try {
+                    const d = JSON.parse(xhr.responseText);
+                    if (d.success !== false && d.latitude !== undefined) {
+                        root.wxLat = d.latitude;
+                        root.wxLon = d.longitude;
+                        if (d.city) root.wxPlace = d.city;
+                    }
+                } catch (e) { /* 解析失败:沿用现有坐标 */ }
+            }
+            root.fetchWeather();   // 无论定位成败,都取一次天气
+        };
+        xhr.open("GET", "https://ipwho.is/");
+        xhr.send();
+    }
+
+    Timer {   // 每 6 小时重新定位(换网络/换地即自动跟随)
+        interval: 21600000; running: root.wxAuto; repeat: true
+        onTriggered: root.fetchLocation()
+    }
+
+    function fetchWeather() {
+        wx.loading = true;
+        const url = "https://api.open-meteo.com/v1/forecast"
+            + "?latitude=" + root.wxLat + "&longitude=" + root.wxLon
+            + "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m"
+            + "&hourly=temperature_2m&forecast_days=1&timezone=auto";
+        const xhr = new XMLHttpRequest();
+        xhr.onreadystatechange = () => {
+            if (xhr.readyState !== XMLHttpRequest.DONE) return;
+            wx.loading = false;
+            if (xhr.status === 200) {
+                try {
+                    const d = JSON.parse(xhr.responseText);
+                    wx.temp = Math.round(d.current.temperature_2m);
+                    wx.code = d.current.weather_code;
+                    wx.humidity = Math.round(d.current.relative_humidity_2m);
+                    wx.wind = Math.round(d.current.wind_speed_10m);
+                    wx.temps = d.hourly.temperature_2m;
+                    // 用 API 返回的当地时间取当前小时,不受本机时区影响
+                    wx.nowIdx = parseInt(d.current.time.substring(11, 13));
+                    wx.updated = new Date();
+                    wx.ok = true;
+                    wxChart.requestPaint();
+                } catch (e) { wx.ok = false; wxRetry.restart(); }
+            } else { wx.ok = false; wxRetry.restart(); }
+        };
+        xhr.open("GET", url);
+        xhr.send();
+    }
+
+    Component.onCompleted: fetchLocation()   // 启动:先定位,链式取天气
+    Timer {   // 十分钟一候(用已定位的坐标)
+        interval: 600000; running: true; repeat: true
+        onTriggered: root.fetchWeather()
+    }
+    Timer { id: wxRetry; interval: 90000; onTriggered: root.fetchWeather() }  // 失败 90s 后重试
+
     // ═══ 右缘触发带(6px 隐形热区) ═══
     PanelWindow {
         anchors { top: true; bottom: true; right: true }
@@ -257,7 +367,7 @@ ShellRoot {
                 x: 18
                 y: header.y + header.height + 22
                 width: parent.width - 36
-                height: parent.height - y - 16
+                height: weatherDivider.y - y - 12
                 spacing: 10
                 clip: true
                 model: notesModel
@@ -355,6 +465,172 @@ ShellRoot {
                 color: root.muted
                 font.family: root.zhFont
                 font.pixelSize: 14
+            }
+
+            // ── 底部:天时一候 ──
+            Rectangle {
+                id: weatherDivider
+                x: 18
+                width: parent.width - 36
+                height: 1
+                color: root.inkLine
+                anchors.bottom: weatherBlock.top
+                anchors.bottomMargin: 10
+            }
+
+            Item {
+                id: weatherBlock
+                x: 18
+                width: parent.width - 36
+                height: 86
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 16
+
+                // 标头:地名 + 时辰更新(点击可手动刷新)
+                Item {
+                    id: wxHeader
+                    width: parent.width
+                    height: 14
+                    Text {
+                        text: "天时 · " + root.wxPlace
+                        color: root.muted
+                        font.family: root.zhFont
+                        font.pixelSize: 11
+                        font.letterSpacing: 1
+                    }
+                    Text {
+                        anchors.right: parent.right
+                        text: wx.loading ? "观云中…"
+                              : (wx.ok ? root.shichen(wx.updated) + "更新" : "取候未得")
+                        color: wxRefresh.containsMouse ? root.cinnabar : root.muted
+                        font.family: root.zhFont
+                        font.pixelSize: 10
+                        MouseArea {
+                            id: wxRefresh
+                            anchors.fill: parent
+                            anchors.margins: -5
+                            hoverEnabled: true
+                            onClicked: root.fetchLocation()
+                        }
+                    }
+                }
+
+                Row {
+                    anchors.top: wxHeader.bottom
+                    anchors.topMargin: 9
+                    width: parent.width
+                    height: 54
+                    spacing: 12
+
+                    // 左:温度大字 + 天况 + 湿度风力
+                    Column {
+                        width: 104
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 3
+                        Row {
+                            spacing: 8
+                            Text {
+                                text: wx.ok ? wx.temp + "°" : "--"
+                                color: root.ink
+                                font.family: root.zhFont
+                                font.pixelSize: 26
+                                font.bold: true
+                            }
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.verticalCenterOffset: 4
+                                text: wx.ok ? root.wxDesc(wx.code) : "…"
+                                color: root.ink
+                                font.family: root.zhFont
+                                font.pixelSize: 14
+                            }
+                        }
+                        Text {
+                            text: wx.ok ? "湿 " + wx.humidity + "% · 风 " + wx.wind : ""
+                            color: root.muted
+                            font.family: root.zhFont
+                            font.pixelSize: 10
+                        }
+                    }
+
+                    // 右:今日温度走势,淡墨一线
+                    Item {
+                        width: parent.width - 104 - 12
+                        height: parent.height
+
+                        Canvas {
+                            id: wxChart
+                            anchors.fill: parent
+                            onVisibleChanged: if (visible) requestPaint()
+                            onPaint: {
+                                const ctx = getContext("2d");
+                                ctx.clearRect(0, 0, width, height);
+                                const t = wx.temps;
+                                if (!wx.ok || !t || t.length < 2) return;
+                                const pad = 5;
+                                let mn = Math.min(...t), mx = Math.max(...t);
+                                if (mx - mn < 1) { mx += 0.5; mn -= 0.5; }
+                                const X = i => pad + (width - 2 * pad) * i / (t.length - 1);
+                                const Y = v => pad + (height - 2 * pad) * (1 - (v - mn) / (mx - mn));
+
+                                // 墨线(中点平滑)
+                                ctx.beginPath();
+                                ctx.moveTo(X(0), Y(t[0]));
+                                for (let i = 1; i < t.length; i++) {
+                                    const xc = (X(i - 1) + X(i)) / 2;
+                                    const yc = (Y(t[i - 1]) + Y(t[i])) / 2;
+                                    ctx.quadraticCurveTo(X(i - 1), Y(t[i - 1]), xc, yc);
+                                }
+                                ctx.lineTo(X(t.length - 1), Y(t[t.length - 1]));
+                                ctx.strokeStyle = Qt.rgba(0.11, 0.10, 0.08, 0.62);
+                                ctx.lineWidth = 1.3;
+                                ctx.stroke();
+
+                                // 曲线下的淡墨晕染
+                                ctx.lineTo(X(t.length - 1), height - 2);
+                                ctx.lineTo(X(0), height - 2);
+                                ctx.closePath();
+                                ctx.fillStyle = Qt.rgba(0.11, 0.10, 0.08, 0.05);
+                                ctx.fill();
+
+                                // 此刻:朱砂一点
+                                const i = Math.min(wx.nowIdx, t.length - 1);
+                                ctx.beginPath();
+                                ctx.arc(X(i), Y(t[i]), 2.6, 0, Math.PI * 2);
+                                ctx.fillStyle = root.cinnabar;
+                                ctx.fill();
+                            }
+                        }
+
+                        // 高低温小注
+                        Text {
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            text: wx.ok && wx.temps.length ? "高 " + Math.round(Math.max(...wx.temps)) + "°" : ""
+                            color: root.muted
+                            font.family: root.zhFont
+                            font.pixelSize: 9
+                        }
+                        Text {
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            text: wx.ok && wx.temps.length ? "低 " + Math.round(Math.min(...wx.temps)) + "°" : ""
+                            color: root.muted
+                            font.family: root.zhFont
+                            font.pixelSize: 9
+                        }
+
+                        // 取数失败
+                        Text {
+                            visible: !wx.ok && !wx.loading
+                            anchors.centerIn: parent
+                            text: "云深不知处"
+                            color: root.muted
+                            font.family: root.zhFont
+                            font.pixelSize: 11
+                        }
+                    }
+                }
             }
         }
     }

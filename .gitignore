@@ -9,6 +9,8 @@
 !waybar/**
 !wofi/
 !wofi/**
+!quickshell
+!quickshell/**
 
 # Ignore possible private/runtime files
 waybar/**/*.log

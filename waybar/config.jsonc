@@ -186,12 +186,11 @@
     "spacing": 8
   },
 
-"custom/media": {
-  "exec": "~/.config/waybar/scripts/media.sh",
-  "interval": 2,
-  "return-type": "json",
-  "escape": true,
-  "on-click": "playerctl play-pause"
+  "custom/media": {
+    "exec": "~/.config/waybar/scripts/media.sh",
+    "return-type": "json",
+    "escape": true,
+    "on-click": "playerctl play-pause"
 },
 
   "custom/separator#blank": {

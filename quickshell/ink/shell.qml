@@ -295,7 +295,7 @@ ShellRoot {
                     anchors.left: seal.right
                     anchors.leftMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "渐写到别来"
+                    text: "写到别来"
                     color: root.ink
                     font.family: root.zhFont
                     font.pixelSize: 17

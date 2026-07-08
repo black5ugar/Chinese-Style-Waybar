@@ -8,16 +8,16 @@
   "margin-right": 10,
   "margin-left": 10,
   "margin-top": 2,
-  "modules-left": [ ],
-  "modules-center": ["custom/jinrishici", "group/center4", "group/center3", "group/center2" ],
-  "modules-right": [ ],
+  "modules-left": ["custom/jinrishici"],
+  "modules-center": ["group/center4"],
+  "modules-right": ["group/center3", "group/center2"],
 
 // GROUPS MODULE
 
   "group/center2": {
 	"orientation": "inherit",
 	"modules": [
-    "custom/clock",
+    "clock",
     "custom/separator#blank",
     "custom/separator#blank",
     "battery",
@@ -103,11 +103,25 @@
   "on-click": "omarchy-launch-or-focus-tui btop"
 },
 
-"custom/clock": {
-    "exec": "~/.config/waybar/clock.sh",
-    "interval": 1,
-    "return-type": "json",
-    "tooltip": false
+"clock": {
+    "format": "{:%m/%d %H:%M}",
+    "interval": 60,
+    "tooltip-format": "<tt><small>{calendar}</small></tt>",
+    "calendar": {
+      "mode": "month",
+      "on-scroll": 1,
+      "format": {
+        "months":   "<span color='#1f1c16'><b>{}</b></span>",
+        "weekdays": "<span color='#8a8171'><b>{}</b></span>",
+        "days":     "<span color='#1f1c16'>{}</span>",
+        "today":    "<span color='#b83227'><b><u>{}</u></b></span>"
+      }
+    },
+    "actions": {
+      "on-scroll-up": "shift_up",
+      "on-scroll-down": "shift_down",
+      "on-click-middle": "shift_reset"
+    }
 },
 
   "network": {

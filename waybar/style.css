@@ -124,6 +124,7 @@ tooltip label {
   color: @foreground;
 }
 
+#clock,
 #custom-clock {
   margin-left: 7px;
   font-weight: 900;
@@ -206,6 +207,7 @@ tooltip label {
 #custom-update,
 #custom-media,
 #custom-clock,
+#clock,
 #network,
 #bluetooth,
 #tray,

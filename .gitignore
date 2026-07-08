@@ -9,7 +9,7 @@
 !waybar/**
 !wofi/
 !wofi/**
-!quickshell
+!quickshell/
 !quickshell/**
 
 # Ignore possible private/runtime files

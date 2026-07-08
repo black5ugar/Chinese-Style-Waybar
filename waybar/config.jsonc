@@ -45,7 +45,6 @@
   "group/center4": {
 	"orientation": "inherit",
 	"modules": [
-    "custom/omarchy",
     "custom/active_window",
     "custom/separator#blank",
     "sway/workspaces",
@@ -105,14 +104,6 @@
     },
 	},
 
-  "custom/omarchy": {
-    // "format": "󰹡",
-    "format": "<span size='11500'></span>",
-    "on-click": "omarchy-menu",
-    "on-click-right": "xdg-terminal-exec",
-    "tooltip-format": "Omarchy Menu\n\nSuper + Alt + Space"
-  },
-
 "memory": {
   "interval": 2,
   "format": "{icon} ",
@@ -143,8 +134,8 @@
 
   "battery": {
     "format": "{capacity}% {icon}",
-    "format-discharging": "{icon}",
-    "format-charging": "{icon}",
+    "format-discharging": "{capacity}% {icon}",
+    "format-charging": "{capacity}% {icon}",
     "format-plugged": "",
     "format-icons": {
       "charging": ["󰢜", "󰂆", "󰂇", "󰂈", "󰢝", "󰂉", "󰢞", "󰂊", "󰂋", "󰂅"],

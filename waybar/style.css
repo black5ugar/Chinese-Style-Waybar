@@ -134,6 +134,7 @@ tooltip label {
     padding: 2px 6px;
     margin-top: 3px;
     margin-bottom: 3px;
+    margin-left: 6px;
     border-radius: 14px;
     background: @background;
     border: 1px solid rgba(31, 28, 22, 0.18);
@@ -152,11 +153,6 @@ tooltip label {
 
 #custom-screenrecording-indicator.active {
   color: @cinnabar;
-}
-
-#custom-omarchy{
-  margin-left: 8px;
-  margin-right: 4px;
 }
 
 #memory {
@@ -202,7 +198,6 @@ tooltip label {
 #center2,
 #workspaces,
 #workspaces button,
-#custom-omarchy,
 #custom-active_window,
 #custom-gamemode,
 #custom-idle-indicator,

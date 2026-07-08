@@ -1,0 +1,105 @@
+/*
+ * 水墨 · 黑白  —  wofi theme
+ * 宣纸底 · 墨字 · 墨块选中 · 右下角朱砂印章「天朗」
+ *
+ * 需要两个文件放在一起（如 ~/.config/wofi/）:
+ *   chinese-ink.css   本文件
+ *   seal.svg          印章图案
+ * 用法: wofi --show drun --style ~/.config/wofi/chinese-ink.css
+ */
+
+* {
+  font-family: "LXGW WenKai", "Noto Serif CJK SC", "Source Han Serif SC", serif;
+  font-size: 17px;
+  color: #1c1c1c;
+  text-shadow: none;
+  outline: none;
+}
+
+window {
+  background-color: rgba(242, 241, 235, 0.96);
+  border: 1px solid rgba(20, 20, 20, 0.45);
+  border-radius: 4px;
+}
+
+/* 内框，同时承载右下角的朱砂印章 */
+#outer-box {
+  margin: 18px;
+  padding: 18px;
+  background-color: rgba(247, 246, 240, 0.82);
+  border: 1px solid rgba(20, 20, 20, 0.18);
+  border-radius: 2px;
+
+  /* 印章：贴在内框右下角。相对路径若不生效，请改成绝对路径，例如
+     url("/home/black5ugar/.config/wofi/seal.svg")
+     若 SVG 仍不显示（缺 librsvg 加载器），改用 url("seal.png") */
+  background-image: url("/home/Lang/.config/wofi/themes/seal.svg"), url("/home/Lang/.config/wofi/themes/poem.svg");
+  background-repeat: no-repeat, no-repeat;
+  background-origin: content-box, content-box;
+  /* 兼容性差时可删掉上面这行（回退到默认 padding-box） */
+  background-position: right bottom, right center;
+  background-size: 58px 58px, 100px 308px;
+}
+
+#input {
+  margin: 0px 0px 18px 0px;
+  padding: 11px 14px;
+
+  background-color: rgba(255, 255, 255, 0.42);
+  color: #111111;
+
+  border: none;
+  border-bottom: 1px solid rgba(20, 20, 20, 0.55);
+  border-radius: 0px;
+}
+
+#input:focus {
+  background-color: rgba(255, 255, 255, 0.58);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.82);
+}
+
+#inner-box {
+  background-color: transparent;
+}
+
+#scroll {
+  background-color: transparent;
+  border: none;
+}
+
+#entry {
+  margin: 5px 0px;
+  padding: 9px 14px;
+  background-color: transparent;
+  border-radius: 0px;
+  border-left: 3px solid transparent;
+}
+
+#entry:selected {
+  background-color: rgba(28, 26, 20, 0.10);
+  border-left: 3px solid rgba(0, 0, 0, 0.95);
+}
+
+#entry:selected #text {
+  color: #000000;
+}
+
+#text {
+  color: #202020;
+  margin-left: 4px;
+}
+
+/* 图标：显示应用真实图标，压成单色墨调以贴合黑白风格 */
+#img {
+  margin: 0px 10px 0px 0px;
+  padding: 0px;
+}
+
+/* 选中行为深色，图标提亮以便看清 */
+#entry:selected #img {
+}
+
+/*
+ * 备选：想要纯黑墨剪影（更统一、但会丢失图标细节），把上面两条 #img 换成：
+ * 想彻底隐藏图标：#img { opacity: 0; } 并把 #text 的 margin-left 改回 0。
+ */

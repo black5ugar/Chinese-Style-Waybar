@@ -1,0 +1,28 @@
+# Ignore everything in ~/.config
+*
+
+# Keep this gitignore
+!.gitignore
+
+# Keep only Waybar and Wofi configs
+!waybar/
+!waybar/**
+!wofi/
+!wofi/**
+
+# Ignore possible private/runtime files
+waybar/**/*.log
+waybar/**/*token*
+waybar/**/*secret*
+waybar/**/*private*
+waybar/**/*local*
+wofi/**/*.log
+wofi/**/*secret*
+wofi/**/*private*
+wofi/**/*local*
+
+# Editor/backup files
+*~
+*.bak
+*.swp
+.DS_Store

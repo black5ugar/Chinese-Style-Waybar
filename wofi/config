@@ -1,0 +1,10 @@
+show=drun
+allow_images=true
+image_size=26
+width=36%
+height=46%
+prompt=寻应用...
+hide_scroll=true
+matching=fuzzy
+insensitive=true
+style=~/.config/wofi/themes/chinese-ink.css

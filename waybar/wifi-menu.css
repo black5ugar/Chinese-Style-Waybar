@@ -1,0 +1,56 @@
+/* 水墨 · Wi-Fi 菜单 — 与 waybar tooltip 同源：宣纸底 · 墨字 · 朱砂点缀 */
+
+* {
+  font-family: "JetBrainsMono Nerd Font Propo", "LXGW WenKai", "Noto Serif CJK SC";
+  font-size: 13px;
+  outline: none;
+}
+
+window {
+  background-color: rgba(243, 241, 234, 0.85);
+  border: 1px solid rgba(31, 28, 22, 0.30);
+  border-radius: 12px;
+}
+
+/* 搜索框：类似 active_window 胶囊 */
+#input {
+  background-color: rgba(255, 255, 255, 0.45);
+  color: #1f1c16;
+  border: 1px solid rgba(31, 28, 22, 0.18);
+  border-radius: 10px;
+  margin: 12px 12px 6px 12px;
+  padding: 6px 10px;
+}
+
+#input image {
+  color: #8a8171;
+}
+
+#input:focus {
+  border: 1px solid rgba(31, 28, 22, 0.35);
+}
+
+#scroll {
+  margin: 0 8px 10px 8px;
+}
+
+#entry {
+  color: #1f1c16;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border-left: 3px solid transparent;
+}
+
+#text {
+  color: #1f1c16;
+}
+
+/* 选中项：朱砂左缘如印泥一抹，与今日诗词模块呼应 */
+#entry:selected {
+  background-color: rgba(184, 50, 39, 0.10);
+  border-left: 3px solid #b83227;
+}
+
+#entry:selected #text {
+  color: #1f1c16;
+}

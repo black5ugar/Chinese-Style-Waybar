@@ -410,7 +410,7 @@ ShellRoot {
                         spacing: 10
 
                         Item {
-                            width: 112; height: 32; clip: true
+                            width: 94; height: 32; clip: true
                             Row {
                                 anchors.verticalCenter: parent.verticalCenter
                                 spacing: 6
@@ -423,55 +423,57 @@ ShellRoot {
                                 }
                                 Item {
                                     id: mediaViewport
-                                    width: 88; height: 28; clip: true
+                                    width: 70; height: 28; clip: true
+                                    property int scrollOffset: 0
                                     readonly property string title: root.player
                                         ? (root.player.trackTitle || root.player.identity)
                                         : "No media"
-                                    readonly property bool needsScroll: firstMediaTitle.implicitWidth > width
-                                    onTitleChanged: {
-                                        marqueeRow.x = 0;
-                                        if (needsScroll) Qt.callLater(() => mediaScroll.restart());
+                                    readonly property bool needsScroll: displayWidth(title) > 10
+
+                                    function displayWidth(value) {
+                                        const characters = Array.from(value);
+                                        let columns = 0;
+                                        for (let i = 0; i < characters.length; i++)
+                                            columns += characters[i].codePointAt(0) > 127 ? 2 : 1;
+                                        return columns;
                                     }
-                                    Row {
-                                        id: marqueeRow
-                                        height: parent.height
-                                        spacing: 0
-                                        BarText {
-                                            id: firstMediaTitle
-                                            height: parent.height
-                                            text: mediaViewport.title
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            anchors.verticalCenterOffset: 3
+
+                                    function visibleFrame() {
+                                        if (!needsScroll) return title;
+                                        const characters = Array.from(title + "  ·  ");
+                                        if (characters.length === 0) return "";
+
+                                        let frame = "";
+                                        let columns = 0;
+                                        let index = scrollOffset % characters.length;
+                                        while (columns < 10) {
+                                            const character = characters[index % characters.length];
+                                            const characterWidth = character.codePointAt(0) > 127 ? 2 : 1;
+                                            if (columns + characterWidth > 10) break;
+                                            frame += character;
+                                            columns += characterWidth;
+                                            index++;
                                         }
-                                        BarText {
-                                            id: mediaSeparator
-                                            height: parent.height
-                                            text: "  ·  "
-                                            visible: mediaViewport.needsScroll
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            anchors.verticalCenterOffset: 3
+                                        while (columns < 10) {
+                                            frame += " ";
+                                            columns++;
                                         }
-                                        BarText {
-                                            height: parent.height
-                                            text: mediaViewport.title
-                                            visible: mediaViewport.needsScroll
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            anchors.verticalCenterOffset: 3
-                                        }
+                                        return frame;
                                     }
-                                    NumberAnimation {
-                                        id: mediaScroll
-                                        target: marqueeRow
-                                        property: "x"
-                                        from: 0
-                                        to: -(firstMediaTitle.implicitWidth + mediaSeparator.implicitWidth)
-                                        duration: Math.max(1600, (firstMediaTitle.implicitWidth + mediaSeparator.implicitWidth) * 70)
-                                        easing.type: Easing.Linear
-                                        loops: Animation.Infinite
-                                        running: mediaViewport.needsScroll
-                                        paused: mediaViewport.needsScroll && root.player
-                                            ? !root.player.isPlaying
-                                            : false
+
+                                    onTitleChanged: scrollOffset = 0
+
+                                    Timer {
+                                        interval: 500
+                                        running: mediaViewport.needsScroll && root.player !== null && root.player.isPlaying
+                                        repeat: true
+                                        onTriggered: mediaViewport.scrollOffset++
+                                    }
+
+                                    BarText {
+                                        y: 3
+                                        width: parent.width; height: parent.height
+                                        text: mediaViewport.visibleFrame()
                                     }
                                 }
                             }
@@ -574,8 +576,29 @@ ShellRoot {
                                 delegate: Item {
                                     id: trayEntry
                                     required property var modelData
+                                    readonly property bool isInputMethod: {
+                                        const itemId = String(modelData.id || "").toLowerCase();
+                                        const title = String(modelData.title || "").toLowerCase();
+                                        return itemId.indexOf("fcitx") >= 0 || title === "input method";
+                                    }
+                                    readonly property bool isRime: String(modelData.icon || "").toLowerCase().indexOf("rime") >= 0
                                     width: 18; height: 34
-                                    IconImage { anchors.centerIn: parent; width: 16; height: 16; source: modelData.icon }
+                                    IconImage {
+                                        anchors.centerIn: parent
+                                        width: 16; height: 16
+                                        source: trayEntry.isInputMethod ? "" : modelData.icon
+                                    }
+                                    BarText {
+                                        visible: trayEntry.isInputMethod
+                                        anchors.centerIn: parent
+                                        width: 16; height: 20
+                                        text: trayEntry.isRime ? "中" : "A"
+                                        color: Theme.ink
+                                        font.family: trayEntry.isRime ? Theme.chineseFont : Theme.fontFamily
+                                        font.pixelSize: 12
+                                        font.weight: Font.Bold
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
                                     MouseArea {
                                         id: trayMouse
                                         anchors.fill: parent
@@ -645,7 +668,9 @@ ShellRoot {
                                 anchors.centerIn: parent
                                 anchors.verticalCenterOffset: parent.isFocused ? -1 : 0
                                 text: root.workspaceIcon(parent.workspaceNumber)
-                                color: parent.isUrgent ? Theme.cinnabar : (parent.isEmpty ? Theme.muted : Theme.ink)
+                                color: parent.isUrgent || parent.isFocused
+                                    ? Theme.cinnabar
+                                    : (parent.isEmpty ? Theme.muted : Theme.ink)
                                 opacity: parent.isFocused || hover.containsMouse ? 1 : (parent.isEmpty ? 0.55 : 1)
                                 font.pixelSize: 18
                                 font.weight: Font.Normal

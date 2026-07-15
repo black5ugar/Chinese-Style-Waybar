@@ -22,6 +22,18 @@ ShellRoot {
     readonly property int popupCloseDelay: 2500
     property int memoryPercent: 0
     property string poemText: "山水有清音"
+    property string poemTitle: ""
+    property string poemAuthor: ""
+    property string poemDynasty: ""
+    property string poemFullText: ""
+    property bool poemTooltipOpen: false
+    property var poemTooltipScreen: null
+    readonly property string poemTooltipText: {
+        const attribution = (root.poemDynasty + " " + root.poemAuthor).trim()
+            + (root.poemTitle ? "《" + root.poemTitle + "》" : "");
+        const body = root.poemFullText || root.poemText;
+        return attribution ? attribution + "\n\n" + body : body;
+    }
     property date now: new Date()
     property var workspaceNumbers: [1, 2, 3, 4, 5, 6, 7, 8]
     property var player: {
@@ -86,9 +98,16 @@ ShellRoot {
 
     function refreshPoem() {
         const cached = root.cachedPoem();
-        if (cached.content) root.poemText = cached.content;
+        if (cached.content) {
+            root.poemText = cached.content;
+            root.poemTitle = cached.title || "";
+            root.poemAuthor = cached.author || "";
+            root.poemDynasty = cached.dynasty || "";
+            root.poemFullText = cached.fullText || "";
+        }
         // 与旧脚本一致：缓存未满 30 分钟时不访问网络。
-        if (cached.content && Date.now() - Number(cached.fetchedAt || 0) < 1800000) return;
+        if (cached.content && cached.fullText
+                && Date.now() - Number(cached.fetchedAt || 0) < 1800000) return;
         if (cached.token) root.requestPoem(cached.token, false);
         else root.fetchPoemToken();
     }
@@ -119,9 +138,22 @@ ShellRoot {
                 const response = JSON.parse(sentenceRequest.responseText);
                 if (response.status === "success" && response.data.content) {
                     const content = response.data.content.replace(/[\r\n\t]+/g, " ");
+                    const origin = response.data.origin || {};
+                    const originContent = origin.content || [];
+                    const fullText = Array.isArray(originContent)
+                        ? originContent.join("\n")
+                        : String(originContent || "");
                     root.poemText = content;
+                    root.poemTitle = origin.title || "";
+                    root.poemAuthor = origin.author || "";
+                    root.poemDynasty = origin.dynasty || "";
+                    root.poemFullText = fullText;
                     poemCache.setText(JSON.stringify({
                         content: content,
+                        title: root.poemTitle,
+                        author: root.poemAuthor,
+                        dynasty: root.poemDynasty,
+                        fullText: fullText,
                         fetchedAt: Date.now(),
                         token: token
                     }));
@@ -238,7 +270,12 @@ ShellRoot {
         root.powerOpen = false;
         root.powerPopupScreen = null;
     }
+    function closePoemTooltip() {
+        root.poemTooltipOpen = false;
+        root.poemTooltipScreen = null;
+    }
     function closeOtherPopups(except) {
+        root.closePoemTooltip();
         if (except !== "wifi") root.closeWifi();
         if (except !== "bluetooth") root.closeBluetooth();
         if (except !== "calendar") root.closeCalendar();
@@ -327,6 +364,55 @@ ShellRoot {
         root.workspaceNumbers = numbers;
     }
 
+    PanelWindow {
+        id: poemTooltip
+        function measuredContentWidth() {
+            const lines = root.poemTooltipText.split("\n");
+            let widest = 0;
+            for (let i = 0; i < lines.length; i++)
+                widest = Math.max(widest, poemTooltipFontMetrics.advanceWidth(lines[i]));
+            return widest;
+        }
+        visible: root.poemTooltipOpen && root.poemTooltipScreen !== null
+        screen: root.poemTooltipScreen
+        anchors { top: true; left: true }
+        margins { top: 52; left: 14 }
+        implicitWidth: Math.min(560, Math.max(180, measuredContentWidth() + 30))
+        implicitHeight: poemTooltipBody.contentHeight + 28
+        color: "transparent"
+        exclusionMode: ExclusionMode.Ignore
+        WlrLayershell.namespace: "ink-poem-tooltip"
+        WlrLayershell.layer: WlrLayer.Overlay
+
+        FontMetrics {
+            id: poemTooltipFontMetrics
+            font.family: Theme.chineseFont
+            font.pixelSize: 13
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            radius: 14
+            color: Qt.rgba(0.976, 0.972, 0.960, 0.96)
+            border.color: Theme.border
+            border.width: 1
+
+            Text {
+                id: poemTooltipBody
+                anchors { top: parent.top; left: parent.left; right: parent.right }
+                anchors.margins: 14
+                text: root.poemTooltipText
+                color: Theme.ink
+                font.family: Theme.chineseFont
+                font.pixelSize: 13
+                font.weight: Font.DemiBold
+                wrapMode: Text.Wrap
+                lineHeight: 1.28
+                renderType: Text.NativeRendering
+            }
+        }
+    }
+
     Connections {
         target: I3
         function onRawEvent(event) { workspaceRefreshTimer.restart(); }
@@ -373,6 +459,27 @@ ShellRoot {
                             ctx.lineTo(inset, height - corner);
                             ctx.quadraticCurveTo(inset, height - inset, corner, height - inset);
                             ctx.stroke();
+                        }
+                    }
+                    Timer {
+                        id: poemTooltipShowTimer
+                        interval: 350
+                        onTriggered: {
+                            if (!poemCardHover.hovered) return;
+                            root.poemTooltipScreen = modelData;
+                            root.poemTooltipOpen = true;
+                        }
+                    }
+                    HoverHandler {
+                        id: poemCardHover
+                        parent: poemCard
+                        onHoveredChanged: {
+                            if (hovered) poemTooltipShowTimer.restart();
+                            else {
+                                poemTooltipShowTimer.stop();
+                                if (root.poemTooltipScreen === modelData)
+                                    root.closePoemTooltip();
+                            }
                         }
                     }
                     Row {

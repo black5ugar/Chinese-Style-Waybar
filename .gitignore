@@ -3,6 +3,8 @@
 
 # Keep this gitignore
 !.gitignore
+!README.md
+!install.sh
 
 # Keep only Waybar and Wofi configs
 !waybar/

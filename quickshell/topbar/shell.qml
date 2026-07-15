@@ -1,3 +1,5 @@
+//@ pragma UseQApplication
+
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
@@ -16,17 +18,35 @@ ShellRoot {
     id: root
 
     property bool powerOpen: false
+    property var powerPopupScreen: null
+    readonly property int popupCloseDelay: 2500
     property int memoryPercent: 0
     property string poemText: "山水有清音"
+    property date now: new Date()
     property var workspaceNumbers: [1, 2, 3, 4, 5, 6, 7, 8]
-    property var player: Mpris.players.values.length > 0 ? Mpris.players.values[0] : null
+    property var player: {
+        const players = Mpris.players.values;
+        for (let i = 0; i < players.length; i++)
+            if (players[i].isPlaying) return players[i];
+        return players.length > 0 ? players[0] : null;
+    }
     property var sink: Pipewire.defaultAudioSink
     property var battery: UPower.displayDevice
     readonly property real batteryPercent: battery ? battery.percentage * 100 : 0
     property var wifiDevice: {
         const devices = Networking.devices.values;
+        let fallback = null;
+        for (let i = 0; i < devices.length; i++) {
+            if (devices[i].type !== DeviceType.Wifi) continue;
+            if (!fallback) fallback = devices[i];
+            if (devices[i].connected) return devices[i];
+        }
+        return fallback;
+    }
+    property var wiredDevice: {
+        const devices = Networking.devices.values;
         for (let i = 0; i < devices.length; i++)
-            if (devices[i].type === DeviceType.Wifi) return devices[i];
+            if (devices[i].type === DeviceType.Wired && devices[i].connected) return devices[i];
         return null;
     }
     property var activeNetwork: {
@@ -81,7 +101,7 @@ ShellRoot {
                 const token = JSON.parse(tokenRequest.responseText).data;
                 if (!token) return;
                 root.requestPoem(token, true);
-            } catch (e) { console.warn("诗词令牌解析失败", e); }
+            } catch (e) { console.warn("Failed to parse poetry token", e); }
         };
         tokenRequest.open("GET", "https://v2.jinrishici.com/token");
         tokenRequest.send();
@@ -106,7 +126,7 @@ ShellRoot {
                         token: token
                     }));
                 } else if (!tokenIsFresh) root.fetchPoemToken();
-            } catch (e) { console.warn("诗词响应解析失败", e); }
+            } catch (e) { console.warn("Failed to parse poetry response", e); }
         };
         sentenceRequest.open("GET", "https://v2.jinrishici.com/sentence");
         sentenceRequest.setRequestHeader("X-User-Token", token);
@@ -121,11 +141,28 @@ ShellRoot {
         interval: 3000; running: true; repeat: true
         onTriggered: memoryPoll.running = true
     }
+    Timer { interval: 60000; running: true; repeat: true; onTriggered: root.now = new Date() }
     Timer { interval: 600000; running: true; repeat: true; onTriggered: root.refreshPoem() }
-    Component.onCompleted: { root.rebuildWorkspaces(); root.refreshPoem(); memoryPoll.running = true }
+    Timer {
+        id: workspaceRefreshTimer
+        interval: 60
+        onTriggered: {
+            I3.refreshWorkspaces();
+            workspaceRebuildTimer.restart();
+        }
+    }
+    Timer {
+        id: workspaceRebuildTimer
+        interval: 90
+        onTriggered: root.rebuildWorkspaces()
+    }
+    Component.onCompleted: {
+        workspaceRefreshTimer.restart();
+        root.refreshPoem();
+        memoryPoll.running = true;
+    }
 
-    Process { id: action; command: []; running: false }
-    function run(args) { action.command = args; action.running = true }
+    function run(args) { Quickshell.execDetached(args); }
     function volume(delta) {
         if (!root.sink || !root.sink.audio) return;
         root.sink.audio.volume = Math.max(0, Math.min(1.5, root.sink.audio.volume + delta));
@@ -149,7 +186,7 @@ ShellRoot {
         return volume < 0.34 ? "" : (volume < 0.67 ? "" : "");
     }
     function calendarBaseDate() {
-        const now = new Date();
+        const now = root.now;
         return new Date(now.getFullYear(), now.getMonth() + root.calendarMonthOffset, 1);
     }
     function calendarCellDate(index) {
@@ -161,7 +198,14 @@ ShellRoot {
         const icons = ["", "󰲠", "󰲢", "󰲤", "󰲦", "󰲨", "󰲪", "󰲬", "󰲮", "󰲰", "󰿬"];
         return number >= 1 && number <= 10 ? icons[number] : "";
     }
-    function wifiIcon() {
+    function workspaceByNumber(number) {
+        const workspaces = I3.workspaces.values;
+        for (let i = 0; i < workspaces.length; i++)
+            if (Number(workspaces[i].number) === number) return workspaces[i];
+        return null;
+    }
+    function networkIcon() {
+        if (root.wiredDevice) return "󰌘";
         if (!Networking.wifiEnabled || !root.wifiDevice) return "󰤮";
         if (!root.activeNetwork) return "󰤯";
         const strength = root.activeNetwork.signalStrength;
@@ -181,9 +225,59 @@ ShellRoot {
     }
     function closeBluetooth() {
         root.bluetoothOpen = false;
+        root.bluetoothPopupScreen = null;
         root.selectedBluetoothDevice = null;
         root.bluetoothError = "";
         if (Bluetooth.defaultAdapter) Bluetooth.defaultAdapter.discovering = false;
+    }
+    function closeCalendar() {
+        root.calendarOpen = false;
+        root.calendarPopupScreen = null;
+    }
+    function closePower() {
+        root.powerOpen = false;
+        root.powerPopupScreen = null;
+    }
+    function closeOtherPopups(except) {
+        if (except !== "wifi") root.closeWifi();
+        if (except !== "bluetooth") root.closeBluetooth();
+        if (except !== "calendar") root.closeCalendar();
+        if (except !== "power") root.closePower();
+    }
+    function toggleCalendar(screen) {
+        const opening = !root.calendarOpen || root.calendarPopupScreen !== screen;
+        root.closeOtherPopups("calendar");
+        if (!opening) return root.closeCalendar();
+        root.calendarPopupScreen = screen;
+        root.calendarOpen = true;
+    }
+    function togglePower(screen) {
+        const opening = !root.powerOpen || root.powerPopupScreen !== screen;
+        root.closeOtherPopups("power");
+        if (!opening) return root.closePower();
+        root.powerPopupScreen = screen;
+        root.powerOpen = true;
+    }
+    function toggleWifi(screen) {
+        const opening = !root.wifiOpen || root.wifiPopupScreen !== screen;
+        root.closeOtherPopups("wifi");
+        if (!opening) return root.closeWifi();
+        root.wifiPopupScreen = screen;
+        root.wifiOpen = true;
+        root.wifiStage = "list";
+        root.selectedNetwork = null;
+        root.wifiError = "";
+        if (root.wifiDevice) root.wifiDevice.scannerEnabled = true;
+    }
+    function toggleBluetooth(screen) {
+        const opening = !root.bluetoothOpen || root.bluetoothPopupScreen !== screen;
+        root.closeOtherPopups("bluetooth");
+        if (!opening) return root.closeBluetooth();
+        root.bluetoothPopupScreen = screen;
+        root.bluetoothOpen = true;
+        root.bluetoothError = "";
+        if (Bluetooth.defaultAdapter)
+            Bluetooth.defaultAdapter.discovering = Bluetooth.defaultAdapter.enabled;
     }
     function toggleBluetoothDevice(device) {
         root.selectedBluetoothDevice = device;
@@ -216,6 +310,7 @@ ShellRoot {
     }
     function closeWifi() {
         root.wifiOpen = false;
+        root.wifiPopupScreen = null;
         root.wifiStage = "list";
         root.selectedNetwork = null;
         root.wifiError = "";
@@ -234,13 +329,14 @@ ShellRoot {
 
     Connections {
         target: I3
-        function onRawEvent(event) { root.rebuildWorkspaces(); }
-        function onConnected() { root.rebuildWorkspaces(); }
+        function onRawEvent(event) { workspaceRefreshTimer.restart(); }
+        function onConnected() { workspaceRefreshTimer.restart(); }
     }
 
     Variants {
         model: Quickshell.screens
         PanelWindow {
+            id: barWindow
             required property var modelData
             screen: modelData
             anchors { top: true; left: true; right: true }
@@ -256,111 +352,49 @@ ShellRoot {
                 spacing: 8
 
                 InkCard {
-                    Layout.preferredWidth: Math.min(420, Math.max(180, poemLabel.implicitWidth + 30))
-                    Rectangle { width: 3; height: 24; radius: 2; color: Theme.cinnabar; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
+                    id: poemCard
+                    Layout.preferredWidth: Math.min(420, Math.max(180,
+                        poemMark.implicitWidth + poemTextLabel.implicitWidth + 47))
+                    radius: 16
+                    Canvas {
+                        parent: poemCard
+                        anchors.fill: parent
+                        onPaint: {
+                            const ctx = getContext("2d");
+                            const inset = 1.5;
+                            const corner = 16;
+                            ctx.clearRect(0, 0, width, height);
+                            ctx.strokeStyle = Theme.cinnabar;
+                            ctx.lineWidth = 3;
+                            ctx.lineCap = "round";
+                            ctx.beginPath();
+                            ctx.moveTo(corner, inset);
+                            ctx.quadraticCurveTo(inset, inset, inset, corner);
+                            ctx.lineTo(inset, height - corner);
+                            ctx.quadraticCurveTo(inset, height - inset, corner, height - inset);
+                            ctx.stroke();
+                        }
+                    }
                     Row {
                         id: poemLabel
-                        anchors.centerIn: parent
+                        anchors.fill: parent
                         spacing: 7
                         BarText {
+                            id: poemMark
+                            height: parent.height
                             text: "詩"
                             color: Theme.cinnabar
                             font.family: Theme.chineseFont
                             font.weight: Font.Bold
                         }
                         BarText {
+                            id: poemTextLabel
+                            height: parent.height
+                            width: parent.width - poemMark.width - parent.spacing
                             text: root.poemText
                             color: Theme.ink
                             font.family: Theme.chineseFont
-                        }
-                    }
-                }
-
-                Item { Layout.fillWidth: true }
-
-                InkCard {
-                    horizontalPadding: 6
-                    Layout.preferredWidth: root.workspaceNumbers.length * 28 + 64
-                    Row {
-                        anchors.centerIn: parent
-                        spacing: 2
-                        Repeater {
-                            model: root.workspaceNumbers
-                            delegate: Item {
-                                required property int modelData
-                                readonly property int workspaceNumber: modelData
-                                readonly property var workspace: I3.findWorkspaceByName(String(workspaceNumber))
-                                readonly property bool isFocused: workspace ? workspace.focused : false
-                                readonly property bool isUrgent: workspace ? workspace.urgent : false
-                                readonly property bool isEmpty: !workspace || !String(workspace.lastIpcObject.representation || "")
-                                width: 27; height: 34
-                                Rectangle {
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    anchors.top: parent.top
-                                    width: parent.width; height: 3; radius: 0
-                                    color: Theme.cinnabar
-                                    opacity: parent.isFocused ? 1 : 0
-                                    Behavior on opacity { NumberAnimation { duration: 50 } }
-                                }
-                                BarText {
-                                    anchors.centerIn: parent
-                                    anchors.verticalCenterOffset: parent.isFocused ? -1 : 0
-                                    text: root.workspaceIcon(parent.workspaceNumber)
-                                    color: parent.isUrgent ? Theme.cinnabar : (parent.isEmpty ? Theme.muted : Theme.ink)
-                                    opacity: parent.isFocused || hover.containsMouse ? 1 : (parent.isEmpty ? 0.55 : 1)
-                                    font.pixelSize: 18
-                                    font.weight: Font.Normal
-                                    Behavior on opacity { NumberAnimation { duration: 50 } }
-                                }
-                                MouseArea {
-                                    id: hover
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: I3.dispatch("workspace number " + parent.workspaceNumber)
-                                }
-                            }
-                        }
-                        Item {
-                            width: 27; height: 34
-                            BarText {
-                                anchors.centerIn: parent
-                                anchors.verticalCenterOffset: 2
-                                text: root.wifiIcon()
-                                font.pixelSize: 19
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    root.wifiPopupScreen = modelData;
-                                    root.wifiOpen = !root.wifiOpen;
-                                    root.wifiStage = "list";
-                                    root.selectedNetwork = null;
-                                    root.wifiError = "";
-                                    if (root.wifiDevice) root.wifiDevice.scannerEnabled = root.wifiOpen;
-                                }
-                            }
-                        }
-                        Item {
-                            width: Bluetooth.defaultAdapter ? 27 : 0; height: 34
-                            BarText {
-                                anchors.centerIn: parent
-                                anchors.verticalCenterOffset: 2
-                                text: root.bluetoothIcon()
-                                font.pixelSize: 19
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    root.bluetoothPopupScreen = modelData;
-                                    root.bluetoothOpen = !root.bluetoothOpen;
-                                    root.bluetoothError = "";
-                                    if (Bluetooth.defaultAdapter)
-                                        Bluetooth.defaultAdapter.discovering = root.bluetoothOpen && Bluetooth.defaultAdapter.enabled;
-                                }
-                            }
+                            elide: Text.ElideRight
                         }
                     }
                 }
@@ -369,8 +403,9 @@ ShellRoot {
 
                 // 旧版 center3：媒体与音量共用一张卡片。
                 InkCard {
-                    Layout.preferredWidth: 205
+                    Layout.preferredWidth: mediaControls.implicitWidth + 20
                     Row {
+                        id: mediaControls
                         anchors.centerIn: parent
                         spacing: 10
 
@@ -381,70 +416,115 @@ ShellRoot {
                                 spacing: 6
                                 BarText {
                                     width: 17; height: 32
-                                    text: root.player && !root.player.isPlaying ? "" : ""
+                                    text: !root.player ? "󰝛" : (root.player.isPlaying ? "" : "")
                                     color: Theme.ink
                                     font.pixelSize: 17
                                     horizontalAlignment: Text.AlignHCenter
                                 }
                                 Item {
+                                    id: mediaViewport
                                     width: 88; height: 28; clip: true
-                                    BarText {
-                                        id: mediaTitle
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: root.player ? (root.player.trackTitle || root.player.identity) : "暂无播放"
-                                        x: 0
-                                        SequentialAnimation on x {
-                                            running: root.player && root.player.isPlaying && mediaTitle.implicitWidth > mediaTitle.parent.width
-                                            loops: Animation.Infinite
-                                            PauseAnimation { duration: 900 }
-                                            NumberAnimation {
-                                                from: 0
-                                                to: -(mediaTitle.implicitWidth - mediaTitle.parent.width)
-                                                duration: Math.max(900, (mediaTitle.implicitWidth - mediaTitle.parent.width) * 70)
-                                                easing.type: Easing.Linear
-                                            }
-                                            PauseAnimation { duration: 700 }
-                                            ScriptAction { script: mediaTitle.x = 0 }
+                                    readonly property string title: root.player
+                                        ? (root.player.trackTitle || root.player.identity)
+                                        : "No media"
+                                    readonly property bool needsScroll: firstMediaTitle.implicitWidth > width
+                                    onTitleChanged: {
+                                        marqueeRow.x = 0;
+                                        if (needsScroll) Qt.callLater(() => mediaScroll.restart());
+                                    }
+                                    Row {
+                                        id: marqueeRow
+                                        height: parent.height
+                                        spacing: 0
+                                        BarText {
+                                            id: firstMediaTitle
+                                            height: parent.height
+                                            text: mediaViewport.title
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            anchors.verticalCenterOffset: 3
                                         }
+                                        BarText {
+                                            id: mediaSeparator
+                                            height: parent.height
+                                            text: "  ·  "
+                                            visible: mediaViewport.needsScroll
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            anchors.verticalCenterOffset: 3
+                                        }
+                                        BarText {
+                                            height: parent.height
+                                            text: mediaViewport.title
+                                            visible: mediaViewport.needsScroll
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            anchors.verticalCenterOffset: 3
+                                        }
+                                    }
+                                    NumberAnimation {
+                                        id: mediaScroll
+                                        target: marqueeRow
+                                        property: "x"
+                                        from: 0
+                                        to: -(firstMediaTitle.implicitWidth + mediaSeparator.implicitWidth)
+                                        duration: Math.max(1600, (firstMediaTitle.implicitWidth + mediaSeparator.implicitWidth) * 70)
+                                        easing.type: Easing.Linear
+                                        loops: Animation.Infinite
+                                        running: mediaViewport.needsScroll
+                                        paused: mediaViewport.needsScroll && root.player
+                                            ? !root.player.isPlaying
+                                            : false
                                     }
                                 }
                             }
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: if (root.player) root.player.togglePlaying() }
                         }
 
-                        Row {
+                        Item {
+                            width: volumeRow.implicitWidth
                             height: 34
-                            spacing: 5
-                            BarText {
-                                width: 20; height: parent.height
-                                text: root.volumeIcon()
-                                font.pixelSize: 18
-                                horizontalAlignment: Text.AlignHCenter
-                            }
-                            BarText {
+                            Row {
+                                id: volumeRow
                                 height: parent.height
-                                text: root.sink && root.sink.audio && !root.sink.audio.muted ? Math.round(root.sink.audio.volume * 100) + "%" : ""
+                                spacing: 5
+                                BarText {
+                                    width: 20; height: parent.height
+                                    text: root.volumeIcon()
+                                    font.pixelSize: 18
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
+                                BarText {
+                                    height: parent.height
+                                    text: root.sink && root.sink.audio && !root.sink.audio.muted ? Math.round(root.sink.audio.volume * 100) + "%" : ""
+                                }
                             }
-                            TapHandler { onTapped: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted }
-                            WheelHandler { onWheel: event => root.volume(event.angleDelta.y > 0 ? 0.03 : -0.03) }
+                            MouseArea {
+                                anchors.fill: parent
+                                acceptedButtons: Qt.LeftButton
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: if (root.sink && root.sink.audio)
+                                    root.sink.audio.muted = !root.sink.audio.muted
+                                onWheel: function(wheel) {
+                                    if (wheel.angleDelta.y === 0) return;
+                                    root.volume(wheel.angleDelta.y > 0 ? 0.03 : -0.03);
+                                    wheel.accepted = true;
+                                }
+                            }
                         }
                     }
                 }
 
                 // 旧版 center2：时钟、电池、内存、托盘、电源。
                 InkCard {
-                    Layout.preferredWidth: SystemTray.items.values.length * 26 + 260
+                    Layout.preferredWidth: rightStatusRow.implicitWidth + 20
                     Row {
+                        id: rightStatusRow
                         anchors.centerIn: parent
                         spacing: 10
 
                         BarText {
                             id: clock
                             height: 34
-                            property date now: new Date()
-                            text: Qt.formatDateTime(now, "MM/dd HH:mm")
+                            text: Qt.formatDateTime(root.now, "MM/dd HH:mm")
                             font.weight: Font.Bold
-                            Timer { interval: 60000; running: true; repeat: true; onTriggered: clock.now = new Date() }
                             MouseArea {
                                 anchors.fill: parent
                                 anchors.margins: -5
@@ -452,10 +532,7 @@ ShellRoot {
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: mouse => {
                                     if (mouse.button === Qt.MiddleButton) root.calendarMonthOffset = 0;
-                                    else {
-                                        root.calendarPopupScreen = modelData;
-                                        root.calendarOpen = !root.calendarOpen;
-                                    }
+                                    else root.toggleCalendar(modelData);
                                 }
                                 onWheel: wheel => root.calendarMonthOffset += wheel.angleDelta.y > 0 ? -1 : 1
                             }
@@ -495,12 +572,29 @@ ShellRoot {
                             Repeater {
                                 model: SystemTray.items
                                 delegate: Item {
+                                    id: trayEntry
                                     required property var modelData
                                     width: 18; height: 34
                                     IconImage { anchors.centerIn: parent; width: 16; height: 16; source: modelData.icon }
                                     MouseArea {
-                                        anchors.fill: parent; acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                        onClicked: mouse => mouse.button === Qt.RightButton ? modelData.display(this, mouse.x, mouse.y) : modelData.activate()
+                                        id: trayMouse
+                                        anchors.fill: parent
+                                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                        cursorShape: Qt.PointingHandCursor
+                                        function showMenu(x, y) {
+                                            const point = trayMouse.mapToItem(barWindow.contentItem, x, y);
+                                            modelData.display(barWindow, Math.round(point.x), Math.round(point.y));
+                                        }
+                                        onClicked: function(mouse) {
+                                            if (mouse.button === Qt.RightButton) {
+                                                if (modelData.hasMenu) showMenu(mouse.x, mouse.y);
+                                                else modelData.secondaryActivate();
+                                            } else if (modelData.onlyMenu && modelData.hasMenu) {
+                                                showMenu(mouse.x, mouse.y);
+                                            } else {
+                                                modelData.activate();
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -509,7 +603,90 @@ ShellRoot {
                             width: 20; height: 34
                             text: "⏻"; color: Theme.cinnabar; font.pixelSize: 17
                             horizontalAlignment: Text.AlignHCenter
-                            MouseArea { anchors.fill: parent; anchors.margins: -8; cursorShape: Qt.PointingHandCursor; onClicked: root.powerOpen = !root.powerOpen }
+                            MouseArea { anchors.fill: parent; anchors.margins: -8; cursorShape: Qt.PointingHandCursor; onClicked: root.togglePower(modelData) }
+                        }
+                    }
+                }
+            }
+
+            InkCard {
+                id: workspaceCard
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.verticalCenter: parent.verticalCenter
+                width: workspaceRow.implicitWidth + 24
+                height: 38
+                z: 1
+                Row {
+                    id: workspaceRow
+                    anchors.centerIn: parent
+                    height: parent.height
+                    spacing: 2
+                    Repeater {
+                        model: root.workspaceNumbers
+                        delegate: Item {
+                            required property int modelData
+                            readonly property int workspaceNumber: modelData
+                            readonly property var workspace: root.workspaceByNumber(workspaceNumber)
+                            readonly property bool isFocused: I3.focusedWorkspace
+                                ? Number(I3.focusedWorkspace.number) === workspaceNumber
+                                : false
+                            readonly property bool isUrgent: workspace ? workspace.urgent : false
+                            readonly property bool isEmpty: !workspace || !String(workspace.lastIpcObject.representation || "")
+                            width: 27; height: parent.height
+                            Rectangle {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.top: parent.top
+                                width: 15; height: 3; radius: 1.5
+                                color: Theme.cinnabar
+                                opacity: parent.isFocused ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: 50 } }
+                            }
+                            BarText {
+                                anchors.centerIn: parent
+                                anchors.verticalCenterOffset: parent.isFocused ? -1 : 0
+                                text: root.workspaceIcon(parent.workspaceNumber)
+                                color: parent.isUrgent ? Theme.cinnabar : (parent.isEmpty ? Theme.muted : Theme.ink)
+                                opacity: parent.isFocused || hover.containsMouse ? 1 : (parent.isEmpty ? 0.55 : 1)
+                                font.pixelSize: 18
+                                font.weight: Font.Normal
+                                Behavior on opacity { NumberAnimation { duration: 50 } }
+                            }
+                            MouseArea {
+                                id: hover
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: I3.dispatch("workspace number " + parent.workspaceNumber)
+                            }
+                        }
+                    }
+                    Item {
+                        width: 27; height: parent.height
+                        BarText {
+                            anchors.centerIn: parent
+                            anchors.verticalCenterOffset: 2
+                            text: root.networkIcon()
+                            font.pixelSize: 19
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: root.wifiDevice !== null
+                            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: root.toggleWifi(modelData)
+                        }
+                    }
+                    Item {
+                        width: Bluetooth.defaultAdapter ? 27 : 0; height: parent.height
+                        BarText {
+                            anchors.centerIn: parent
+                            anchors.verticalCenterOffset: 2
+                            text: root.bluetoothIcon()
+                            font.pixelSize: 19
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleBluetooth(modelData)
                         }
                     }
                 }
@@ -526,7 +703,7 @@ ShellRoot {
         }
         function onConnectionFailed(reason) {
             root.wifiStage = "password";
-            root.wifiError = "连接失败，请检查密码后重试";
+            root.wifiError = "Connection failed. Check the password and try again.";
             passwordFocus.restart();
         }
     }
@@ -545,11 +722,19 @@ ShellRoot {
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
 
+        Timer {
+            interval: root.popupCloseDelay
+            running: calendarPopup.visible && !calendarPopupHover.hovered
+            onTriggered: root.closeCalendar()
+        }
+
         Rectangle {
+            id: calendarPopupSurface
             anchors.fill: parent
             radius: 16
             color: Qt.rgba(0.976, 0.972, 0.960, 0.96)
             border.color: Theme.border
+            HoverHandler { id: calendarPopupHover }
 
             Column {
                 anchors.fill: parent
@@ -564,9 +749,8 @@ ShellRoot {
                     }
                     BarText {
                         width: parent.width - 72; height: parent.height
-                        text: Qt.formatDate(root.calendarBaseDate(), "yyyy 年 MM 月")
+                        text: Qt.locale("en_US").toString(root.calendarBaseDate(), "MMMM yyyy")
                         color: Theme.ink
-                        font.family: Theme.chineseFont
                         font.pixelSize: 16
                         font.weight: Font.Bold
                         horizontalAlignment: Text.AlignHCenter
@@ -581,7 +765,7 @@ ShellRoot {
                     width: parent.width
                     columns: 7
                     Repeater {
-                        model: ["一", "二", "三", "四", "五", "六", "日"]
+                        model: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
                         delegate: BarText {
                             required property string modelData
                             width: 38; height: 25
@@ -601,7 +785,7 @@ ShellRoot {
                         delegate: Item {
                             required property int index
                             readonly property date cellDate: root.calendarCellDate(index)
-                            readonly property date today: new Date()
+                            readonly property date today: root.now
                             readonly property bool inMonth: cellDate.getMonth() === root.calendarBaseDate().getMonth()
                             readonly property bool isToday: cellDate.getFullYear() === today.getFullYear()
                                                             && cellDate.getMonth() === today.getMonth()
@@ -625,7 +809,7 @@ ShellRoot {
                 }
             }
         }
-        Shortcut { sequence: "Escape"; onActivated: root.calendarOpen = false }
+        Shortcut { sequence: "Escape"; onActivated: root.closeCalendar() }
     }
 
     Timer {
@@ -653,13 +837,21 @@ ShellRoot {
 
         Behavior on implicitHeight { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
+        Timer {
+            interval: root.popupCloseDelay
+            running: wifiPopup.visible && !wifiPopupHover.hovered
+            onTriggered: root.closeWifi()
+        }
+
         Rectangle {
+            id: wifiPopupSurface
             anchors.fill: parent
             color: Qt.rgba(0.976, 0.972, 0.960, 0.96)
             border.color: Theme.border
             border.width: 1
             radius: 16
             clip: true
+            HoverHandler { id: wifiPopupHover }
 
             Item {
                 anchors.fill: parent
@@ -675,9 +867,8 @@ ShellRoot {
                         height: 34
                         BarText {
                             width: parent.width - 38
-                            text: "无线网络"
+                            text: "Wireless Networks"
                             color: Theme.cinnabar
-                            font.family: Theme.chineseFont
                             font.pixelSize: 17
                         }
                         BarText {
@@ -812,7 +1003,9 @@ ShellRoot {
                             anchors.left: parent.left
                             anchors.leftMargin: 12
                             anchors.verticalCenter: parent.verticalCenter
-                            text: root.selectedNetwork && root.selectedNetwork.known ? "留空以使用已保存的密码" : "输入 Wi-Fi 密码"
+                            text: root.selectedNetwork && root.selectedNetwork.known
+                                ? "Leave blank to use the saved password"
+                                : "Enter Wi-Fi password"
                             color: Theme.muted
                             font.weight: Font.Normal
                         }
@@ -843,9 +1036,8 @@ ShellRoot {
 
                         BarText {
                             anchors.centerIn: parent
-                            text: "断开连接"
+                            text: "Disconnect"
                             color: Theme.cinnabar
-                            font.family: Theme.chineseFont
                             font.pixelSize: 14
                         }
                         HoverHandler { id: disconnectHover }
@@ -855,7 +1047,7 @@ ShellRoot {
                     BarText {
                         visible: root.wifiStage === "disconnecting"
                         width: parent.width
-                        text: "正在断开连接"
+                        text: "Disconnecting…"
                         color: Theme.muted
                         horizontalAlignment: Text.AlignHCenter
                         font.weight: Font.Normal
@@ -873,7 +1065,7 @@ ShellRoot {
                     BarText {
                         visible: root.wifiStage === "password"
                         width: parent.width
-                        text: "按 Enter 连接  ·  Esc 返回"
+                        text: "Enter to connect  ·  Esc to go back"
                         color: Theme.muted
                         horizontalAlignment: Text.AlignHCenter
                         font.weight: Font.Normal
@@ -918,13 +1110,21 @@ ShellRoot {
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
 
+        Timer {
+            interval: root.popupCloseDelay
+            running: bluetoothPopup.visible && !bluetoothPopupHover.hovered
+            onTriggered: root.closeBluetooth()
+        }
+
         Rectangle {
+            id: bluetoothPopupSurface
             anchors.fill: parent
             color: Qt.rgba(0.976, 0.972, 0.960, 0.96)
             border.color: Theme.border
             border.width: 1
             radius: 16
             clip: true
+            HoverHandler { id: bluetoothPopupHover }
 
             Column {
                 anchors.fill: parent
@@ -936,9 +1136,8 @@ ShellRoot {
                     height: 34
                     BarText {
                         width: parent.width - 38
-                        text: "蓝牙设备"
+                        text: "Bluetooth Devices"
                         color: Theme.cinnabar
-                        font.family: Theme.chineseFont
                         font.pixelSize: 17
                     }
                     BarText {
@@ -1043,38 +1242,48 @@ ShellRoot {
     }
 
     PanelWindow {
+        id: powerPopup
         visible: root.powerOpen
+        screen: root.powerPopupScreen
         anchors { top: true; right: true }
         margins { top: 56; right: 18 }
-        implicitWidth: 250; implicitHeight: 230
+        implicitWidth: 200; implicitHeight: 230
         color: "transparent"
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.namespace: "ink-power"
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.keyboardFocus: WlrKeyboardFocus.OnDemand
 
+        Timer {
+            interval: root.popupCloseDelay
+            running: powerPopup.visible && !powerPopupHover.hovered
+            onTriggered: root.closePower()
+        }
+
         Rectangle {
+            id: powerPopupSurface
             anchors.fill: parent; radius: 18; color: Qt.rgba(0.976, 0.972, 0.960, 0.94); border.color: Theme.border
+            HoverHandler { id: powerPopupHover }
             Column {
                 anchors.fill: parent; anchors.margins: 14; spacing: 7
-                BarText { text: "电源"; color: Theme.cinnabar; font.family: Theme.chineseFont; font.pixelSize: 17; height: 30 }
+                BarText { text: "Power"; color: Theme.cinnabar; font.pixelSize: 17; height: 30 }
                 Repeater {
                     model: [
-                        { label: "󰌾  锁定", cmd: ["swaylock", "-f"] },
-                        { label: "󰍃  退出 Sway", cmd: ["swaymsg", "exit"] },
-                        { label: "󰜉  重新启动", cmd: ["systemctl", "reboot"] },
-                        { label: "󰐥  关机", cmd: ["systemctl", "poweroff"] }
+                        { label: "󰌾  Lock", cmd: ["swaylock", "-f"] },
+                        { label: "󰍃  Log out of Sway", cmd: ["swaymsg", "exit"] },
+                        { label: "󰜉  Restart", cmd: ["systemctl", "reboot"] },
+                        { label: "󰐥  Shut down", cmd: ["systemctl", "poweroff"] }
                     ]
                     delegate: Rectangle {
                         required property var modelData
                         width: parent.width; height: 36; radius: 10; color: hover.hovered ? Qt.rgba(0.72,0.20,0.15,0.10) : "transparent"
                         BarText { anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter; text: modelData.label }
                         HoverHandler { id: hover }
-                        TapHandler { onTapped: { root.powerOpen = false; root.run(modelData.cmd) } }
+                        TapHandler { onTapped: { root.closePower(); root.run(modelData.cmd) } }
                     }
                 }
             }
         }
-        Shortcut { sequence: "Escape"; onActivated: root.powerOpen = false }
+        Shortcut { sequence: "Escape"; onActivated: root.closePower() }
     }
 }

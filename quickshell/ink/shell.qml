@@ -87,12 +87,17 @@ ShellRoot {
     }
 
     // ═══ 天时:Open-Meteo · 十分钟一候 ═══
-    // wxAuto = true 时按 IP 自动定位(城市级精度,挂 VPN 会定到出口节点);
-    // 定位失败或 wxAuto = false 时,使用下面手填的坐标与地名
+    // wxAuto = true: 按公网 IP 粗略定位；使用 VPN/代理时会定位到出口节点。
+    // wxAuto = false: 按 wxCityQuery 搜索城市，适合中国城市或固定地点。
     property bool wxAuto: true
-    property real wxLat: 52.51
-    property real wxLon: 5.47
-    property string wxPlace: "莱利斯塔德"
+    property string wxCityQuery: "北京"
+    property string wxRegionHint: ""       // 同名城市时可填省份，如“辽宁”
+    property string wxCountryCode: "CN"
+    property real wxLat: 39.9042
+    property real wxLon: 116.4074
+    property string wxPlace: "北京"
+    property int wxLocationSeq: 0
+    property var wxLocationXhr: null
 
     QtObject {
         id: wx
@@ -105,6 +110,7 @@ ShellRoot {
         property int nowIdx: 0
         property var temps: []
         property var updated: new Date()
+        property string locationError: ""
     }
 
     function wxDesc(c) {
@@ -132,25 +138,183 @@ ShellRoot {
         return n[Math.floor(((d.getHours() + 1) % 24) / 2)] + "时";
     }
 
-    // IP 定位:启动时与每 6 小时一次;成功后刷新天气
+    function validCoordinates(lat, lon) {
+        const a = Number(lat), o = Number(lon);
+        return isFinite(a) && isFinite(o) && Math.abs(a) <= 90 && Math.abs(o) <= 180;
+    }
+
+    function normalizePlaceName(s) {
+        return String(s || "")
+            .replace(/(特别行政区|壮族自治区|回族自治区|维吾尔自治区|自治区|省|市|地区|盟|自治州)$/g, "")
+            .replace(/\s+/g, "")
+            .toLowerCase();
+    }
+
+    function cityLabel(result) {
+        const name = String(result.name || root.wxCityQuery || "未知").replace(/市$/, "");
+        const admin1 = String(result.admin1 || "")
+            .replace(/(特别行政区|壮族自治区|回族自治区|维吾尔自治区|自治区|省|市)$/g, "");
+        if (admin1 && normalizePlaceName(admin1) !== normalizePlaceName(name))
+            return admin1 + "·" + name;
+        return name;
+    }
+
+    function chooseCityResult(results) {
+        if (!results || results.length === 0) return null;
+        const q = normalizePlaceName(root.wxCityQuery);
+        const region = normalizePlaceName(root.wxRegionHint);
+        let best = results[0];
+        let bestScore = -1;
+
+        for (let i = 0; i < results.length; i++) {
+            const r = results[i];
+            let score = 0;
+            const name = normalizePlaceName(r.name);
+            const admin1 = normalizePlaceName(r.admin1);
+            const feature = String(r.feature_code || "");
+
+            if (name === q) score += 1000;
+            else if (name.indexOf(q) >= 0 || q.indexOf(name) >= 0) score += 300;
+            if (region && admin1.indexOf(region) >= 0) score += 800;
+            if (feature === "PPLC") score += 150;
+            else if (feature.indexOf("PPLA") === 0) score += 100;
+            if (r.population) score += Math.min(100, Math.log(Number(r.population) + 1) * 5);
+
+            if (score > bestScore) {
+                bestScore = score;
+                best = r;
+            }
+        }
+        return best;
+    }
+
+    Timer {
+        id: wxLocationTimeout
+        interval: 10000
+        repeat: false
+        property int requestSeq: 0
+        property string requestKind: ""
+        onTriggered: {
+            if (requestSeq !== root.wxLocationSeq) return;
+            root.wxLocationSeq++;
+            if (root.wxLocationXhr) {
+                try { root.wxLocationXhr.abort(); } catch (e) {}
+                root.wxLocationXhr = null;
+            }
+            if (requestKind === "ip") {
+                console.warn("天时: IP 定位超时，改用城市搜索", root.wxCityQuery);
+                root.fetchCityLocation();
+            } else {
+                wx.locationError = "城市定位超时";
+                console.warn("天时:", wx.locationError, root.wxCityQuery);
+                root.fetchWeather(); // 使用最近一次有效坐标
+            }
+        }
+    }
+
+    // 自动模式只依赖公网 IP，不是 GPS。代理开启时定位到代理出口是正常现象。
     function fetchLocation() {
-        if (!root.wxAuto) { root.fetchWeather(); return; }
+        if (!root.wxAuto) {
+            root.fetchCityLocation();
+            return;
+        }
+
+        const seq = ++root.wxLocationSeq;
         const xhr = new XMLHttpRequest();
+        root.wxLocationXhr = xhr;
+        wxLocationTimeout.requestSeq = seq;
+        wxLocationTimeout.requestKind = "ip";
+        wxLocationTimeout.restart();
+
         xhr.onreadystatechange = () => {
-            if (xhr.readyState !== XMLHttpRequest.DONE) return;
+            if (xhr.readyState !== XMLHttpRequest.DONE || seq !== root.wxLocationSeq) return;
+            wxLocationTimeout.stop();
+            root.wxLocationXhr = null;
+
+            let located = false;
             if (xhr.status === 200) {
                 try {
                     const d = JSON.parse(xhr.responseText);
-                    if (d.success !== false && d.latitude !== undefined) {
-                        root.wxLat = d.latitude;
-                        root.wxLon = d.longitude;
-                        if (d.city) root.wxPlace = d.city;
+                    if (d.success !== false && validCoordinates(d.latitude, d.longitude)) {
+                        root.wxLat = Number(d.latitude);
+                        root.wxLon = Number(d.longitude);
+                        root.wxPlace = d.city || d.region || root.wxPlace;
+                        wx.locationError = "";
+                        located = true;
+                    } else {
+                        wx.locationError = d.message || "IP 定位返回无效坐标";
                     }
-                } catch (e) { /* 解析失败:沿用现有坐标 */ }
+                } catch (e) {
+                    wx.locationError = "IP 定位响应解析失败";
+                }
+            } else {
+                wx.locationError = "IP 定位 HTTP " + xhr.status;
             }
-            root.fetchWeather();   // 无论定位成败,都取一次天气
+
+            if (located) {
+                root.fetchWeather();
+            } else {
+                console.warn("天时:", wx.locationError, "改用城市搜索", root.wxCityQuery);
+                root.fetchCityLocation();
+            }
         };
-        xhr.open("GET", "https://ipwho.is/");
+        xhr.open("GET", "https://ipwho.is/?lang=zh-CN&fields=success,message,country_code,region,city,latitude,longitude");
+        xhr.send();
+    }
+
+    // 城市模式:把中文城市名解析成坐标；countryCode=CN 可避免搜到国外同名地点。
+    function fetchCityLocation() {
+        const query = String(root.wxCityQuery || "").trim();
+        if (query.length < 2) {
+            wx.locationError = "城市名至少需要两个字符";
+            console.warn("天时:", wx.locationError);
+            root.fetchWeather();
+            return;
+        }
+
+        const seq = ++root.wxLocationSeq;
+        const xhr = new XMLHttpRequest();
+        root.wxLocationXhr = xhr;
+        wxLocationTimeout.requestSeq = seq;
+        wxLocationTimeout.requestKind = "city";
+        wxLocationTimeout.restart();
+
+        let url = "https://geocoding-api.open-meteo.com/v1/search"
+            + "?name=" + encodeURIComponent(query)
+            + "&count=10&language=zh&format=json";
+        if (root.wxCountryCode)
+            url += "&countryCode=" + encodeURIComponent(root.wxCountryCode);
+
+        xhr.onreadystatechange = () => {
+            if (xhr.readyState !== XMLHttpRequest.DONE || seq !== root.wxLocationSeq) return;
+            wxLocationTimeout.stop();
+            root.wxLocationXhr = null;
+
+            let located = false;
+            if (xhr.status === 200) {
+                try {
+                    const d = JSON.parse(xhr.responseText);
+                    const best = chooseCityResult(d.results || []);
+                    if (best && validCoordinates(best.latitude, best.longitude)) {
+                        root.wxLat = Number(best.latitude);
+                        root.wxLon = Number(best.longitude);
+                        root.wxPlace = cityLabel(best);
+                        wx.locationError = "";
+                        located = true;
+                    } else {
+                        wx.locationError = "未找到城市: " + query;
+                    }
+                } catch (e) {
+                    wx.locationError = "城市定位响应解析失败";
+                }
+            } else {
+                wx.locationError = "城市定位 HTTP " + xhr.status;
+            }
+
+            if (!located) console.warn("天时:", wx.locationError);
+            root.fetchWeather(); // 失败时仍使用最近一次有效坐标
+        };
+        xhr.open("GET", url);
         xhr.send();
     }
 
@@ -182,8 +346,16 @@ ShellRoot {
                     wx.updated = new Date();
                     wx.ok = true;
                     wxChart.requestPaint();
-                } catch (e) { wx.ok = false; wxRetry.restart(); }
-            } else { wx.ok = false; wxRetry.restart(); }
+                } catch (e) {
+                    wx.ok = false;
+                    console.warn("天时: 天气响应解析失败", e);
+                    wxRetry.restart();
+                }
+            } else {
+                wx.ok = false;
+                console.warn("天时: 天气请求失败 HTTP", xhr.status);
+                wxRetry.restart();
+            }
         };
         xhr.open("GET", url);
         xhr.send();

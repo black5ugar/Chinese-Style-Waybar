@@ -1,76 +1,60 @@
 /*
- * 水墨 · 黑白  —  wofi theme(宣纸毛边版)
- * 宣纸底 · 墨字 · 墨块选中 · 右下角朱砂印章「天朗」
+ * Quickshell Ink — wofi application launcher
  *
- * 需要以下文件放在一起(如 ~/.config/wofi/themes/):
- *   chinese-ink.css   本文件
- *   paper.png         宣纸纹理(含斑驳质地 + 不规则毛边 + 透明边缘)
- *   seal.svg          印章图案
- *   poem.svg          题诗
- *
- * 原理:GTK3 CSS 不支持 clip-path/mask,毛边无法用 CSS 画出。
- * 因此窗口本体全透明,整张"纸"(底色、斑驳、毛边)烘焙在 paper.png 里,
- * 依赖合成器(Hyprland)渲染透明边缘。
- *
- * Hyprland 注意:若对 layer 表面开了模糊,请在 hyprland.conf 加:
- *   layerrule = ignorezero, wofi
- * 否则毛边外的透明区域会被模糊填成方形。
+ * 与 quickshell/topbar/Theme.qml 共用同一套视觉语言：
+ * 暖白纸色、墨色正文、灰褐辅助色、朱砂交互色和柔和圆角。
  */
 
 * {
-  font-family: "LXGW WenKai", "Noto Serif CJK SC", "Source Han Serif SC", serif;
-  font-size: 17px;
-  color: #1c1c1c;
+  font-family: "JetBrainsMono Nerd Font Propo", "LXGW WenKai", "Noto Sans CJK SC", sans-serif;
+  font-size: 16px;
+  color: #1f1c16;
   text-shadow: none;
   outline: none;
 }
 
-/* 窗口全透明,纸张由 paper.png 提供 */
 window {
-  background-color: transparent;
-  border: none;
-  border-radius: 0px;
-  background-image: url("/home/Lang/.config/wofi/themes/paper.png");
-  background-repeat: no-repeat;
-  background-size: 100% 100%;
+  margin: 0px;
+  padding: 0px;
+  background-color: rgba(249, 248, 245, 0.96);
+  border: 1px solid rgba(31, 28, 22, 0.18);
+  border-radius: 16px;
+  box-shadow: 0 12px 36px rgba(31, 28, 22, 0.16);
 }
 
-/* 内框:仅做布局与承载印章/题诗,自身完全透明。
-   margin 是内容与毛边之间的安全距离——
-   1080p 下 36px 起步即可,1440p 建议 46px;若文字压到毛边就调大。 */
 #outer-box {
-  margin: 46px;
-  padding: 6px;
+  margin: 0px;
+  padding: 14px;
   background-color: transparent;
-  border: none;
-
   background-image: url("/home/Lang/.config/wofi/themes/seal.svg"), url("/home/Lang/.config/wofi/themes/poem.svg");
   background-repeat: no-repeat, no-repeat;
   background-origin: content-box, content-box;
   background-position: right bottom, right center;
-  background-size: 58px 58px, 100px 308px;
+  background-size: 46px 46px, 64px 198px;
+  border: none;
+  border-radius: 16px;
 }
 
 #input {
-  margin: 0px 0px 18px 0px;
-  padding: 11px 14px;
-
-  /* 半透明白会盖住纸纹,改用极淡的墨色浮层,让纹理透出来 */
-  background-color: rgba(28, 26, 20, 0.04);
-  color: #111111;
-
-  border: none;
-  border-bottom: 1px solid rgba(20, 20, 20, 0.55);
-  border-radius: 0px;
+  margin: 0px 0px 12px 0px;
+  padding: 10px 13px;
+  background-color: rgba(255, 255, 255, 0.45);
+  color: #1f1c16;
+  caret-color: #b83227;
+  border: 1px solid rgba(31, 28, 22, 0.18);
+  border-radius: 10px;
+  box-shadow: none;
 }
 
 #input:focus {
-  background-color: rgba(28, 26, 20, 0.07);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.82);
+  background-color: rgba(255, 255, 255, 0.62);
+  border-color: #b83227;
 }
 
 #inner-box {
+  margin-right: 78px;
   background-color: transparent;
+  border: none;
 }
 
 #scroll {
@@ -79,32 +63,28 @@ window {
 }
 
 #entry {
-  margin: 5px 0px;
-  padding: 9px 14px;
+  margin: 2px 0px;
+  padding: 9px 11px;
   background-color: transparent;
-  border-radius: 0px;
-  border-left: 3px solid transparent;
+  border: none;
+  border-radius: 10px;
 }
 
 #entry:selected {
-  background-color: rgba(28, 26, 20, 0.10);
-  border-left: 3px solid rgba(0, 0, 0, 0.95);
-}
-
-#entry:selected #text {
-  color: #000000;
+  background-color: rgba(184, 50, 39, 0.10);
 }
 
 #text {
-  color: #202020;
-  margin-left: 4px;
+  margin-left: 5px;
+  color: #1f1c16;
 }
 
-/* 图标:显示应用真实图标 */
+#entry:selected #text {
+  color: #1f1c16;
+  font-weight: 600;
+}
+
 #img {
   margin: 0px 10px 0px 0px;
   padding: 0px;
-}
-
-#entry:selected #img {
 }

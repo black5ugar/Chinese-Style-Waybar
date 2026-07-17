@@ -2,6 +2,7 @@
 
 import QtQuick
 import QtQuick.Layouts
+import "."
 import Quickshell
 import Quickshell.Bluetooth
 import Quickshell.I3
@@ -69,10 +70,19 @@ ShellRoot {
         return null;
     }
     property bool wifiOpen: false
+    // Wi-Fi popup state machine: list, credentials, connection and connectivity.
     property string wifiStage: "list"
     property var selectedNetwork: null
     property string wifiError: ""
     property var wifiPopupScreen: null
+    property string wifiReturnStage: "list"
+    property bool wifiEnterpriseHidden: false
+    property string wifiPendingHiddenSsid: ""
+    property string wifiHiddenSecurity: "personal"
+    property string wifiEapMethod: "peap"
+    property string wifiPhase2Method: "mschapv2"
+    property string wifiHelperRequest: ""
+    property bool wifiPortalOpened: false
     property bool bluetoothOpen: false
     property var bluetoothPopupScreen: null
     property var selectedBluetoothDevice: null
@@ -169,12 +179,52 @@ ShellRoot {
         command: ["sh", "-c", "awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf \"%d%%\",(t-a)*100/t}' /proc/meminfo"]
         stdout: StdioCollector { onStreamFinished: root.memoryPercent = parseInt(text) || 0 }
     }
+    Process {
+        id: wifiManagerProcess
+        command: ["python3", Quickshell.env("HOME") + "/.config/quickshell/topbar/wifi-manager.py"]
+        stdinEnabled: true
+        onStarted: write(root.wifiHelperRequest + "\n")
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (text.trim().length === 0) return;
+                try {
+                    const result = JSON.parse(text.trim());
+                    if (!result.ok) {
+                        root.wifiStage = root.wifiReturnStage;
+                        root.wifiError = result.error || "NetworkManager rejected the request.";
+                        wifiFieldFocus.restart();
+                        return;
+                    }
+                    root.wifiError = "";
+                    root.wifiStage = "connected";
+                    connectivityRefreshTimer.restart();
+                } catch (error) {
+                    root.wifiStage = root.wifiReturnStage;
+                    root.wifiError = "Could not read the NetworkManager response.";
+                }
+            }
+        }
+    }
+    Process {
+        id: trayRegistrationRepair
+        command: [Quickshell.env("HOME") + "/.config/quickshell/topbar/repair-qqmusic-tray.sh"]
+    }
+    Timer {
+        interval: 750
+        running: true
+        onTriggered: trayRegistrationRepair.running = true
+    }
     Timer {
         interval: 3000; running: true; repeat: true
         onTriggered: memoryPoll.running = true
     }
     Timer { interval: 60000; running: true; repeat: true; onTriggered: root.now = new Date() }
     Timer { interval: 600000; running: true; repeat: true; onTriggered: root.refreshPoem() }
+    Timer {
+        id: connectivityRefreshTimer
+        interval: 650
+        onTriggered: root.updateWifiConnectivity()
+    }
     Timer {
         id: workspaceRefreshTimer
         interval: 60
@@ -240,6 +290,9 @@ ShellRoot {
         if (root.wiredDevice) return "󰌘";
         if (!Networking.wifiEnabled || !root.wifiDevice) return "󰤮";
         if (!root.activeNetwork) return "󰤯";
+        if (Networking.connectivity === NetworkConnectivity.Portal
+                || Networking.connectivity === NetworkConnectivity.Limited
+                || Networking.connectivity === NetworkConnectivity.None) return "󰤭";
         const strength = root.activeNetwork.signalStrength;
         if (strength >= 0.8) return "󰤨";
         if (strength >= 0.6) return "󰤥";
@@ -304,6 +357,7 @@ ShellRoot {
         root.wifiStage = "list";
         root.selectedNetwork = null;
         root.wifiError = "";
+        root.wifiPortalOpened = false;
         if (root.wifiDevice) root.wifiDevice.scannerEnabled = true;
     }
     function toggleBluetooth(screen) {
@@ -323,21 +377,222 @@ ShellRoot {
         else if (device.paired) device.connect();
         else device.pair();
     }
+    function wifiSecurityKind(network) {
+        if (!network) return "unknown";
+        if (network.security === WifiSecurityType.Open || network.security === WifiSecurityType.Owe)
+            return "open";
+        if (network.security === WifiSecurityType.WpaPsk
+                || network.security === WifiSecurityType.Wpa2Psk
+                || network.security === WifiSecurityType.Sae) return "personal";
+        if (network.security === WifiSecurityType.WpaEap
+                || network.security === WifiSecurityType.Wpa2Eap) return "enterprise";
+        if (network.security === WifiSecurityType.Wpa3SuiteB192) return "certificate";
+        if (network.security === WifiSecurityType.StaticWep
+                || network.security === WifiSecurityType.DynamicWep
+                || network.security === WifiSecurityType.Leap) return "legacy";
+        return "unknown";
+    }
+    function wifiSecurityLabel(network) {
+        if (!network) return "";
+        switch (network.security) {
+        case WifiSecurityType.Open: return "Open network";
+        case WifiSecurityType.Owe: return "Enhanced Open (OWE)";
+        case WifiSecurityType.WpaPsk: return "WPA Personal";
+        case WifiSecurityType.Wpa2Psk: return "WPA2 Personal";
+        case WifiSecurityType.Sae: return "WPA3 Personal";
+        case WifiSecurityType.WpaEap: return "WPA Enterprise";
+        case WifiSecurityType.Wpa2Eap: return "WPA2 Enterprise";
+        case WifiSecurityType.Wpa3SuiteB192: return "WPA3 Enterprise 192-bit";
+        case WifiSecurityType.StaticWep: return "WEP";
+        case WifiSecurityType.DynamicWep: return "Dynamic WEP";
+        case WifiSecurityType.Leap: return "LEAP";
+        default: return "Unknown security";
+        }
+    }
+    function selectedWifiUuid() {
+        if (!root.selectedNetwork || !root.selectedNetwork.nmSettings
+                || root.selectedNetwork.nmSettings.length === 0) return "";
+        return root.selectedNetwork.nmSettings[0].uuid || "";
+    }
     function openWifi(network) {
         root.selectedNetwork = network;
         root.wifiError = "";
-        root.wifiStage = network.connected ? "connected" : "password";
+        root.wifiEnterpriseHidden = false;
+        if (network.connected) {
+            root.updateWifiConnectivity();
+            return;
+        }
+        if (network.known) {
+            root.wifiStage = "connecting";
+            network.connect();
+            return;
+        }
+        const kind = root.wifiSecurityKind(network);
+        if (kind === "open") {
+            root.wifiStage = "connecting";
+            network.connect();
+        } else if (kind === "personal") {
+            root.wifiStage = "password";
+            wifiFieldFocus.restart();
+        } else if (kind === "enterprise") {
+            root.wifiStage = "enterprise";
+            wifiFieldFocus.restart();
+        } else {
+            root.wifiStage = "unsupported";
+            root.wifiError = kind === "certificate"
+                ? "This network requires a client certificate and private key."
+                : (kind === "legacy"
+                    ? "This legacy security mode needs advanced NetworkManager settings."
+                    : "The access point uses an unrecognized security mode.");
+        }
     }
     function connectWifi(password) {
         if (!root.selectedNetwork) return;
+        const isSae = root.selectedNetwork.security === WifiSecurityType.Sae;
+        const validPsk = password.length >= 8 && password.length <= 63
+            || /^[0-9a-fA-F]{64}$/.test(password);
+        if ((!isSae && !validPsk) || (isSae && password.length === 0)) {
+            root.wifiError = isSae
+                ? "Enter the WPA3 password."
+                : "Use 8–63 characters, or a 64-digit hexadecimal key.";
+            return;
+        }
         root.wifiError = "";
         root.wifiStage = "connecting";
-        if (root.selectedNetwork.known && password.length === 0)
-            root.selectedNetwork.connect();
-        else if (root.selectedNetwork.security === WifiSecurityType.Open)
-            root.selectedNetwork.connect();
+        root.selectedNetwork.connectWithPsk(password);
+        wifiPassword.text = "";
+    }
+    function startWifiHelper(request, returnStage) {
+        if (wifiManagerProcess.running) return;
+        root.wifiError = "";
+        root.wifiReturnStage = returnStage;
+        root.wifiHelperRequest = JSON.stringify(request);
+        root.wifiStage = "connecting";
+        wifiManagerProcess.running = true;
+    }
+    function connectEnterprise() {
+        const ssid = root.wifiEnterpriseHidden
+            ? root.wifiPendingHiddenSsid
+            : (root.selectedNetwork ? root.selectedNetwork.name : "");
+        if ((!root.selectedWifiUuid() && !wifiEnterpriseIdentity.text.trim())
+                || !wifiEnterprisePassword.text) {
+            root.wifiError = root.selectedWifiUuid()
+                ? "Password is required."
+                : "Username and password are required.";
+            return;
+        }
+        root.startWifiHelper({
+            action: "connect-enterprise",
+            hidden: root.wifiEnterpriseHidden,
+            ssid: ssid,
+            interface: root.wifiDevice ? root.wifiDevice.name : "",
+            uuid: root.wifiEnterpriseHidden ? "" : root.selectedWifiUuid(),
+            identity: wifiEnterpriseIdentity.text,
+            password: wifiEnterprisePassword.text,
+            anonymousIdentity: wifiEnterpriseAnonymous.text,
+            domain: wifiEnterpriseDomain.text,
+            caCert: wifiEnterpriseCa.text,
+            eap: root.wifiEapMethod,
+            phase2: root.wifiPhase2Method
+        }, "enterprise");
+        wifiEnterprisePassword.text = "";
+    }
+    function cycleHiddenSecurity() {
+        root.wifiHiddenSecurity = root.wifiHiddenSecurity === "open"
+            ? "personal" : (root.wifiHiddenSecurity === "personal" ? "sae"
+            : (root.wifiHiddenSecurity === "sae" ? "enterprise" : "open"));
+    }
+    function connectHiddenWifi() {
+        const ssid = wifiHiddenSsid.text.trim();
+        if (!ssid) {
+            root.wifiError = "Network name is required.";
+            return;
+        }
+        if (root.wifiHiddenSecurity === "enterprise") {
+            root.wifiEnterpriseHidden = true;
+            root.wifiPendingHiddenSsid = ssid;
+            root.wifiStage = "enterprise";
+            root.wifiError = "";
+            wifiFieldFocus.restart();
+            return;
+        }
+        if ((root.wifiHiddenSecurity === "personal" || root.wifiHiddenSecurity === "sae")
+                && !wifiHiddenPassword.text) {
+            root.wifiError = "Password is required.";
+            return;
+        }
+        root.startWifiHelper({
+            action: root.wifiHiddenSecurity === "open" ? "connect-open" : "connect-personal",
+            hidden: true,
+            ssid: ssid,
+            interface: root.wifiDevice ? root.wifiDevice.name : "",
+            keyMgmt: root.wifiHiddenSecurity === "sae" ? "sae" : "wpa-psk",
+            password: wifiHiddenPassword.text
+        }, "hidden");
+        wifiHiddenPassword.text = "";
+    }
+    function wifiFailureText(reason) {
+        switch (reason) {
+        case ConnectionFailReason.NoSecrets: return "NetworkManager needs additional credentials.";
+        case ConnectionFailReason.WifiAuthTimeout: return "Authentication timed out. Check the credentials and signal.";
+        case ConnectionFailReason.WifiNetworkLost: return "The network disappeared during connection.";
+        case ConnectionFailReason.WifiClientDisconnected: return "The access point ended the connection.";
+        case ConnectionFailReason.WifiClientFailed: return "The Wi-Fi adapter could not complete the connection.";
+        default: return "The connection failed for an unknown reason.";
+        }
+    }
+    function updateWifiConnectivity() {
+        if (!root.activeNetwork) {
+            if (root.wifiStage === "disconnecting") root.wifiStage = "list";
+            return;
+        }
+        if (!root.selectedNetwork) root.selectedNetwork = root.activeNetwork;
+        if (Networking.canCheckConnectivity && !Networking.connectivityCheckEnabled)
+            Networking.connectivityCheckEnabled = true;
+        if (Networking.canCheckConnectivity) Networking.checkConnectivity();
+        if (Networking.connectivity === NetworkConnectivity.Portal)
+            root.wifiStage = "portal";
+        else if (Networking.connectivity === NetworkConnectivity.Limited
+                || Networking.connectivity === NetworkConnectivity.None)
+            root.wifiStage = "limited";
         else
-            root.selectedNetwork.connectWithPsk(password);
+            root.wifiStage = "connected";
+    }
+    function openWifiPortal() {
+        root.wifiPortalOpened = true;
+        root.run(["xdg-open", "http://ping.archlinux.org/nm-check.txt"]);
+    }
+    function forgetWifi() {
+        if (!root.selectedNetwork) return;
+        root.selectedNetwork.forget();
+        root.wifiStage = "list";
+        root.selectedNetwork = null;
+        root.wifiError = "";
+    }
+    function clearWifiSecrets() {
+        wifiPassword.text = "";
+        wifiEnterprisePassword.text = "";
+        wifiHiddenPassword.text = "";
+    }
+    function cancelWifiConnection() {
+        if (wifiManagerProcess.running) wifiManagerProcess.signal(15);
+        if (root.selectedNetwork && root.selectedNetwork.stateChanging)
+            root.selectedNetwork.disconnect();
+        root.wifiStage = "list";
+        root.selectedNetwork = null;
+        root.wifiError = "";
+        root.clearWifiSecrets();
+    }
+    function wifiBack() {
+        if (root.wifiStage === "enterprise" && root.wifiEnterpriseHidden) {
+            root.wifiStage = "hidden";
+            root.wifiEnterpriseHidden = false;
+        } else {
+            root.wifiStage = "list";
+            root.selectedNetwork = null;
+        }
+        root.wifiError = "";
+        root.clearWifiSecrets();
     }
     function disconnectWifi() {
         if (!root.selectedNetwork) return;
@@ -351,6 +606,10 @@ ShellRoot {
         root.wifiStage = "list";
         root.selectedNetwork = null;
         root.wifiError = "";
+        root.wifiEnterpriseHidden = false;
+        root.wifiPendingHiddenSsid = "";
+        root.wifiPortalOpened = false;
+        root.clearWifiSecrets();
         if (root.wifiDevice) root.wifiDevice.scannerEnabled = false;
     }
     function rebuildWorkspaces() {
@@ -581,6 +840,7 @@ ShellRoot {
                                         y: 3
                                         width: parent.width; height: parent.height
                                         text: mediaViewport.visibleFrame()
+                                        horizontalAlignment: Text.AlignHCenter
                                     }
                                 }
                             }
@@ -830,13 +1090,48 @@ ShellRoot {
         target: root.selectedNetwork
         ignoreUnknownSignals: true
         function onConnectedChanged() {
-            if (root.selectedNetwork && root.selectedNetwork.connected) root.closeWifi();
-            else if (root.selectedNetwork && root.wifiStage === "disconnecting") root.closeWifi();
+            if (root.selectedNetwork && root.selectedNetwork.connected) {
+                root.wifiError = "";
+                connectivityRefreshTimer.restart();
+            } else if (root.wifiStage === "disconnecting") {
+                root.wifiStage = "list";
+                root.selectedNetwork = null;
+            }
         }
         function onConnectionFailed(reason) {
-            root.wifiStage = "password";
-            root.wifiError = "Connection failed. Check the password and try again.";
-            passwordFocus.restart();
+            const kind = root.wifiSecurityKind(root.selectedNetwork);
+            if (reason === ConnectionFailReason.NoSecrets && kind === "personal") {
+                root.wifiStage = "password";
+                root.wifiError = "Enter the password required by this network.";
+                wifiFieldFocus.restart();
+            } else if (reason === ConnectionFailReason.NoSecrets && kind === "enterprise") {
+                root.wifiStage = "enterprise";
+                root.wifiError = "Enter the enterprise credentials required by this profile.";
+                wifiFieldFocus.restart();
+            } else {
+                root.wifiStage = "error";
+                root.wifiError = root.wifiFailureText(reason);
+            }
+        }
+    }
+
+    Connections {
+        target: Networking
+        function onConnectivityChanged() {
+            if (!root.wifiOpen || !root.activeNetwork) return;
+            const connectionStage = root.wifiStage === "connecting"
+                || root.wifiStage === "connected" || root.wifiStage === "portal"
+                || root.wifiStage === "limited";
+            if (!connectionStage && (!root.selectedNetwork || !root.selectedNetwork.connected)) return;
+            if (Networking.connectivity === NetworkConnectivity.Portal)
+                root.wifiStage = "portal";
+            else if (Networking.connectivity === NetworkConnectivity.Limited
+                    || Networking.connectivity === NetworkConnectivity.None)
+                root.wifiStage = "limited";
+            else if (Networking.connectivity === NetworkConnectivity.Full
+                    && (root.wifiStage === "connecting" || root.wifiStage === "connected"
+                        || root.wifiStage === "portal" || root.wifiStage === "limited"))
+                root.wifiStage = "connected";
         }
     }
 
@@ -945,9 +1240,13 @@ ShellRoot {
     }
 
     Timer {
-        id: passwordFocus
+        id: wifiFieldFocus
         interval: 60
-        onTriggered: { wifiPassword.forceActiveFocus(); wifiPassword.selectAll(); }
+        onTriggered: {
+            if (root.wifiStage === "password") wifiPassword.focus();
+            else if (root.wifiStage === "enterprise") wifiEnterpriseIdentity.focus();
+            else if (root.wifiStage === "hidden") wifiHiddenSsid.focus();
+        }
     }
 
     PanelWindow {
@@ -959,8 +1258,10 @@ ShellRoot {
             top: 52
             left: wifiPopup.screen ? Math.round((wifiPopup.screen.width - wifiPopup.implicitWidth) / 2) : 0
         }
-        implicitWidth: 350
-        implicitHeight: root.wifiStage === "list" ? 390 : 190
+        implicitWidth: 380
+        implicitHeight: root.wifiStage === "list" ? 390
+            : (root.wifiStage === "enterprise" ? 520
+            : (root.wifiStage === "hidden" ? 350 : 270))
         color: "transparent"
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.namespace: "ink-wifi"
@@ -971,8 +1272,15 @@ ShellRoot {
 
         Timer {
             interval: root.popupCloseDelay
-            running: wifiPopup.visible && !wifiPopupHover.hovered
+            running: wifiPopup.visible && root.wifiStage === "list" && !wifiPopupHover.hovered
             onTriggered: root.closeWifi()
+        }
+
+        Timer {
+            interval: 5000
+            repeat: true
+            running: wifiPopup.visible && root.wifiStage === "portal"
+            onTriggered: if (Networking.canCheckConnectivity) Networking.checkConnectivity()
         }
 
         Rectangle {
@@ -998,10 +1306,27 @@ ShellRoot {
                         width: parent.width
                         height: 34
                         BarText {
-                            width: parent.width - 38
+                            width: parent.width - 74
                             text: "Wireless Networks"
                             color: Theme.cinnabar
                             font.pixelSize: 17
+                        }
+                        BarText {
+                            width: 36
+                            text: "＋"
+                            color: Theme.ink
+                            horizontalAlignment: Text.AlignHCenter
+                            font.pixelSize: 19
+                            MouseArea {
+                                anchors.fill: parent
+                                anchors.margins: -6
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    root.wifiStage = "hidden";
+                                    root.wifiError = "";
+                                    wifiFieldFocus.restart();
+                                }
+                            }
                         }
                         BarText {
                             width: 38
@@ -1042,13 +1367,15 @@ ShellRoot {
                                     font.pixelSize: 17
                                 }
                                 BarText {
-                                    width: parent.width - 96; height: parent.height
+                                    width: parent.width - 116; height: parent.height
                                     text: modelData.name
                                     elide: Text.ElideRight
                                 }
                                 BarText {
                                     width: 20; height: parent.height
-                                    text: modelData.security === WifiSecurityType.Open ? "" : "󰌾"
+                                    text: modelData.known ? "󰋊"
+                                        : (modelData.security === WifiSecurityType.Open
+                                           || modelData.security === WifiSecurityType.Owe ? "" : "󰌾")
                                     color: Theme.muted
                                 }
                                 Item {
@@ -1081,10 +1408,8 @@ ShellRoot {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
-                                    if (!modelData.connected) {
-                                        root.openWifi(modelData);
-                                        passwordFocus.restart();
-                                    }
+                                    if (!modelData.connected) root.openWifi(modelData);
+                                    else { root.selectedNetwork = modelData; root.updateWifiConnectivity(); }
                                 }
                             }
                         }
@@ -1094,113 +1419,309 @@ ShellRoot {
                 Column {
                     visible: root.wifiStage !== "list"
                     anchors.fill: parent
-                    spacing: 12
+                    spacing: 10
 
-                    BarText {
+                    Row {
                         width: parent.width
-                        text: root.selectedNetwork ? root.selectedNetwork.name : ""
-                        color: Theme.cinnabar
-                        font.family: Theme.chineseFont
-                        font.pixelSize: 18
-                        horizontalAlignment: Text.AlignHCenter
+                        height: 32
+                        BarText {
+                            width: 34; height: parent.height
+                            text: "‹"
+                            color: Theme.muted
+                            font.pixelSize: 22
+                            horizontalAlignment: Text.AlignHCenter
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.wifiBack()
+                            }
+                        }
+                        BarText {
+                            width: parent.width - 68; height: parent.height
+                            text: root.wifiEnterpriseHidden ? root.wifiPendingHiddenSsid
+                                : (root.selectedNetwork ? root.selectedNetwork.name
+                                   : (root.wifiStage === "hidden" ? "Hidden network" : "Wi-Fi"))
+                            color: Theme.cinnabar
+                            font.family: Theme.chineseFont
+                            font.pixelSize: 18
+                            elide: Text.ElideRight
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+                        Item { width: 34; height: parent.height }
                     }
 
-                    Rectangle {
+                    Column {
                         visible: root.wifiStage === "password"
                         width: parent.width
-                        height: 42
-                        radius: 10
-                        color: Qt.rgba(1, 1, 1, 0.45)
-                        border.color: wifiPassword.activeFocus ? Theme.cinnabar : Theme.border
-                        border.width: 1
-
-                        TextInput {
-                            id: wifiPassword
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            verticalAlignment: TextInput.AlignVCenter
-                            color: Theme.ink
-                            selectionColor: Theme.cinnabar
-                            selectedTextColor: "white"
-                            font.family: Theme.fontFamily
-                            font.pixelSize: 13
-                            echoMode: TextInput.Password
-                            passwordCharacter: "●"
-                            Keys.onReturnPressed: root.connectWifi(text)
-                            onVisibleChanged: if (visible) { text = ""; passwordFocus.restart(); }
-                        }
+                        spacing: 10
                         BarText {
-                            visible: !wifiPassword.text && !wifiPassword.activeFocus
-                            anchors.left: parent.left
-                            anchors.leftMargin: 12
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: root.selectedNetwork && root.selectedNetwork.known
-                                ? "Leave blank to use the saved password"
-                                : "Enter Wi-Fi password"
+                            width: parent.width; height: 22
+                            text: root.wifiSecurityLabel(root.selectedNetwork)
                             color: Theme.muted
+                            horizontalAlignment: Text.AlignHCenter
                             font.weight: Font.Normal
                         }
+                        WifiField {
+                            id: wifiPassword
+                            password: true
+                            placeholderText: "Wi-Fi password"
+                            onAccepted: root.connectWifi(text)
+                        }
+                        Rectangle {
+                            width: parent.width; height: 40; radius: 10
+                            color: personalConnectHover.hovered ? Qt.rgba(0.72, 0.20, 0.15, 0.14) : Qt.rgba(0.72, 0.20, 0.15, 0.08)
+                            border.color: Theme.cinnabar
+                            BarText { anchors.centerIn: parent; text: "Connect"; color: Theme.cinnabar }
+                            HoverHandler { id: personalConnectHover }
+                            TapHandler { onTapped: root.connectWifi(wifiPassword.text) }
+                        }
                     }
 
-                    Item {
+                    Column {
+                        visible: root.wifiStage === "enterprise"
+                        width: parent.width
+                        spacing: 8
+                        Row {
+                            width: parent.width; height: 34; spacing: 8
+                            visible: root.wifiEnterpriseHidden || root.selectedWifiUuid() === ""
+                            Rectangle {
+                                width: (parent.width - 8) / 2; height: parent.height; radius: 9
+                                color: Qt.rgba(0.72, 0.20, 0.15, 0.08); border.color: Theme.border
+                                BarText { anchors.centerIn: parent; text: root.wifiEapMethod.toUpperCase(); color: Theme.cinnabar }
+                                MouseArea {
+                                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        root.wifiEapMethod = root.wifiEapMethod === "peap" ? "ttls" : "peap";
+                                        root.wifiPhase2Method = root.wifiEapMethod === "peap" ? "mschapv2" : "pap";
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                width: (parent.width - 8) / 2; height: parent.height; radius: 9
+                                color: Qt.rgba(0.72, 0.20, 0.15, 0.08); border.color: Theme.border
+                                BarText { anchors.centerIn: parent; text: root.wifiPhase2Method.toUpperCase(); color: Theme.ink }
+                                MouseArea {
+                                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (root.wifiEapMethod === "peap")
+                                            root.wifiPhase2Method = root.wifiPhase2Method === "mschapv2" ? "gtc" : "mschapv2";
+                                        else
+                                            root.wifiPhase2Method = root.wifiPhase2Method === "pap" ? "mschapv2" : "pap";
+                                    }
+                                }
+                            }
+                        }
+                        WifiField {
+                            id: wifiEnterpriseIdentity
+                            placeholderText: root.selectedWifiUuid()
+                                ? "Username (blank keeps the saved identity)"
+                                : "Username / identity"
+                        }
+                        WifiField { id: wifiEnterprisePassword; placeholderText: "Password"; password: true; onAccepted: root.connectEnterprise() }
+                        WifiField { id: wifiEnterpriseAnonymous; placeholderText: "Anonymous identity (optional)" }
+                        WifiField { id: wifiEnterpriseDomain; placeholderText: "Server domain (recommended)" }
+                        WifiField { id: wifiEnterpriseCa; placeholderText: "CA certificate path (optional)" }
+                        Rectangle {
+                            width: parent.width; height: 40; radius: 10
+                            color: enterpriseConnectHover.hovered ? Qt.rgba(0.72, 0.20, 0.15, 0.14) : Qt.rgba(0.72, 0.20, 0.15, 0.08)
+                            border.color: Theme.cinnabar
+                            BarText { anchors.centerIn: parent; text: "Connect securely"; color: Theme.cinnabar }
+                            HoverHandler { id: enterpriseConnectHover }
+                            TapHandler { onTapped: root.connectEnterprise() }
+                        }
+                        BarText {
+                            width: parent.width; height: 26
+                            text: "System CAs are used when no certificate path is supplied."
+                            color: Theme.muted; font.pixelSize: 10; font.weight: Font.Normal
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+                    }
+
+                    Column {
+                        visible: root.wifiStage === "hidden"
+                        width: parent.width
+                        spacing: 10
+                        WifiField { id: wifiHiddenSsid; placeholderText: "Network name (SSID)"; onAccepted: root.connectHiddenWifi() }
+                        Rectangle {
+                            width: parent.width; height: 38; radius: 10
+                            color: Qt.rgba(0.72, 0.20, 0.15, 0.08); border.color: Theme.border
+                            BarText {
+                                anchors.centerIn: parent
+                                text: root.wifiHiddenSecurity === "open" ? "Open network"
+                                    : (root.wifiHiddenSecurity === "personal" ? "WPA/WPA2 Personal"
+                                    : (root.wifiHiddenSecurity === "sae" ? "WPA3 Personal" : "WPA Enterprise"))
+                                color: Theme.ink
+                            }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.cycleHiddenSecurity() }
+                        }
+                        WifiField {
+                            id: wifiHiddenPassword
+                            visible: root.wifiHiddenSecurity === "personal" || root.wifiHiddenSecurity === "sae"
+                            placeholderText: "Wi-Fi password"
+                            password: true
+                            onAccepted: root.connectHiddenWifi()
+                        }
+                        Rectangle {
+                            width: parent.width; height: 40; radius: 10
+                            color: hiddenConnectHover.hovered ? Qt.rgba(0.72, 0.20, 0.15, 0.14) : Qt.rgba(0.72, 0.20, 0.15, 0.08)
+                            border.color: Theme.cinnabar
+                            BarText {
+                                anchors.centerIn: parent
+                                text: root.wifiHiddenSecurity === "enterprise" ? "Continue" : "Connect"
+                                color: Theme.cinnabar
+                            }
+                            HoverHandler { id: hiddenConnectHover }
+                            TapHandler { onTapped: root.connectHiddenWifi() }
+                        }
+                    }
+
+                    Column {
                         visible: root.wifiStage === "connecting" || root.wifiStage === "disconnecting"
                         width: parent.width
-                        height: 48
+                        spacing: 12
+                        Item {
+                            width: parent.width; height: 64
+                            BarText {
+                                id: wifiSpinner
+                                anchors.centerIn: parent
+                                text: "󰑓"; color: Theme.cinnabar; font.pixelSize: 25
+                                RotationAnimator on rotation { from: 0; to: 360; duration: 850; loops: Animation.Infinite; running: wifiSpinner.visible }
+                            }
+                        }
                         BarText {
-                            id: wifiSpinner
-                            anchors.centerIn: parent
-                            text: "󰑓"
-                            color: Theme.cinnabar
-                            font.pixelSize: 25
-                            RotationAnimator on rotation { from: 0; to: 360; duration: 850; loops: Animation.Infinite; running: wifiSpinner.visible }
+                            width: parent.width; height: 24
+                            text: root.wifiStage === "disconnecting" ? "Disconnecting…" : "Authenticating and obtaining an address…"
+                            color: Theme.muted; horizontalAlignment: Text.AlignHCenter; font.weight: Font.Normal
+                        }
+                        Rectangle {
+                            width: parent.width; height: 38; radius: 10; color: "transparent"; border.color: Theme.border
+                            BarText { anchors.centerIn: parent; text: "Cancel"; color: Theme.muted }
+                            TapHandler { onTapped: root.cancelWifiConnection() }
                         }
                     }
 
-                    Rectangle {
+                    Column {
                         visible: root.wifiStage === "connected"
                         width: parent.width
-                        height: 42
-                        radius: 10
-                        color: disconnectHover.hovered ? Qt.rgba(0.72, 0.20, 0.15, 0.14) : Qt.rgba(0.72, 0.20, 0.15, 0.08)
-                        border.color: Theme.cinnabar
-                        border.width: 1
-
+                        spacing: 10
                         BarText {
-                            anchors.centerIn: parent
-                            text: "Disconnect"
-                            color: Theme.cinnabar
-                            font.pixelSize: 14
+                            width: parent.width; height: 30; text: "󰤨  Connected to the Internet"
+                            color: Theme.ink; font.pixelSize: 15; horizontalAlignment: Text.AlignHCenter
                         }
-                        HoverHandler { id: disconnectHover }
-                        TapHandler { onTapped: root.disconnectWifi() }
+                        BarText {
+                            width: parent.width; height: 20
+                            text: root.wifiSecurityLabel(root.selectedNetwork)
+                            color: Theme.muted; font.weight: Font.Normal; horizontalAlignment: Text.AlignHCenter
+                        }
+                        Row {
+                            width: parent.width; height: 40; spacing: 8
+                            Rectangle {
+                                width: (parent.width - 8) / 2; height: parent.height; radius: 10
+                                color: Qt.rgba(0.72, 0.20, 0.15, 0.08); border.color: Theme.cinnabar
+                                BarText { anchors.centerIn: parent; text: "Disconnect"; color: Theme.cinnabar }
+                                TapHandler { onTapped: root.disconnectWifi() }
+                            }
+                            Rectangle {
+                                width: (parent.width - 8) / 2; height: parent.height; radius: 10
+                                color: "transparent"; border.color: Theme.border
+                                BarText { anchors.centerIn: parent; text: "Forget"; color: Theme.muted }
+                                TapHandler { onTapped: root.forgetWifi() }
+                            }
+                        }
                     }
 
-                    BarText {
-                        visible: root.wifiStage === "disconnecting"
+                    Column {
+                        visible: root.wifiStage === "portal"
                         width: parent.width
-                        text: "Disconnecting…"
-                        color: Theme.muted
-                        horizontalAlignment: Text.AlignHCenter
-                        font.weight: Font.Normal
+                        spacing: 10
+                        BarText {
+                            width: parent.width; height: 34; text: "󰌆  Sign-in required"
+                            color: Theme.cinnabar; font.pixelSize: 16; horizontalAlignment: Text.AlignHCenter
+                        }
+                        BarText {
+                            width: parent.width; height: 36
+                            text: "This network requires authentication in a web browser."
+                            color: Theme.muted; wrapMode: Text.Wrap; font.weight: Font.Normal
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+                        Rectangle {
+                            width: parent.width; height: 40; radius: 10
+                            color: Qt.rgba(0.72, 0.20, 0.15, 0.10); border.color: Theme.cinnabar
+                            BarText { anchors.centerIn: parent; text: root.wifiPortalOpened ? "Open sign-in page again" : "Open sign-in page"; color: Theme.cinnabar }
+                            TapHandler { onTapped: root.openWifiPortal() }
+                        }
+                        Rectangle {
+                            width: parent.width; height: 38; radius: 10; color: "transparent"; border.color: Theme.border
+                            BarText { anchors.centerIn: parent; text: "Check again"; color: Theme.ink }
+                            TapHandler { onTapped: if (Networking.canCheckConnectivity) Networking.checkConnectivity() }
+                        }
+                    }
+
+                    Column {
+                        visible: root.wifiStage === "limited"
+                        width: parent.width; spacing: 10
+                        BarText {
+                            width: parent.width; height: 34; text: "󰤭  No Internet access"
+                            color: Theme.cinnabar; font.pixelSize: 16; horizontalAlignment: Text.AlignHCenter
+                        }
+                        BarText {
+                            width: parent.width; height: 38
+                            text: "The Wi-Fi link is active, but Internet connectivity could not be verified."
+                            color: Theme.muted; wrapMode: Text.Wrap; font.weight: Font.Normal
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+                        Rectangle {
+                            width: parent.width; height: 40; radius: 10
+                            color: Qt.rgba(0.72, 0.20, 0.15, 0.08); border.color: Theme.cinnabar
+                            BarText { anchors.centerIn: parent; text: "Open sign-in page"; color: Theme.cinnabar }
+                            TapHandler { onTapped: root.openWifiPortal() }
+                        }
+                        Rectangle {
+                            width: parent.width; height: 38; radius: 10; color: "transparent"; border.color: Theme.border
+                            BarText { anchors.centerIn: parent; text: "Check again"; color: Theme.ink }
+                            TapHandler { onTapped: if (Networking.canCheckConnectivity) Networking.checkConnectivity() }
+                        }
+                    }
+
+                    Column {
+                        visible: root.wifiStage === "unsupported" || root.wifiStage === "error"
+                        width: parent.width; spacing: 12
+                        BarText {
+                            width: parent.width; height: 68
+                            text: root.wifiError
+                            color: Theme.cinnabar; wrapMode: Text.Wrap; font.weight: Font.Normal
+                            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                        }
+                        Rectangle {
+                            visible: root.selectedNetwork && root.selectedNetwork.known
+                            width: parent.width; height: 38; radius: 10
+                            color: "transparent"; border.color: Theme.border
+                            BarText { anchors.centerIn: parent; text: "Forget saved profile"; color: Theme.muted }
+                            TapHandler { onTapped: root.forgetWifi() }
+                        }
+                        Rectangle {
+                            visible: root.wifiStage === "unsupported"
+                            width: parent.width; height: 40; radius: 10
+                            color: Qt.rgba(0.72, 0.20, 0.15, 0.08); border.color: Theme.cinnabar
+                            BarText { anchors.centerIn: parent; text: "Open advanced network settings"; color: Theme.cinnabar }
+                            TapHandler { onTapped: root.run(["alacritty", "-e", "nmtui"]) }
+                        }
+                        Rectangle {
+                            width: parent.width; height: 38; radius: 10; color: "transparent"; border.color: Theme.border
+                            BarText { anchors.centerIn: parent; text: "Back to networks"; color: Theme.ink }
+                            TapHandler { onTapped: root.wifiBack() }
+                        }
                     }
 
                     BarText {
                         visible: root.wifiError.length > 0
+                            && root.wifiStage !== "unsupported" && root.wifiStage !== "error"
                         width: parent.width
+                        height: Math.max(24, contentHeight)
                         text: root.wifiError
                         color: Theme.cinnabar
+                        wrapMode: Text.Wrap
                         horizontalAlignment: Text.AlignHCenter
-                        font.pixelSize: 11
-                    }
-
-                    BarText {
-                        visible: root.wifiStage === "password"
-                        width: parent.width
-                        text: "Enter to connect  ·  Esc to go back"
-                        color: Theme.muted
-                        horizontalAlignment: Text.AlignHCenter
-                        font.weight: Font.Normal
                         font.pixelSize: 11
                     }
                 }
@@ -1211,7 +1732,9 @@ ShellRoot {
             sequence: "Escape"
             onActivated: {
                 if (root.wifiStage === "list") root.closeWifi();
-                else { root.wifiStage = "list"; root.selectedNetwork = null; root.wifiError = ""; }
+                else if (root.wifiStage === "connecting" || root.wifiStage === "disconnecting")
+                    root.cancelWifiConnection();
+                else root.wifiBack();
             }
         }
     }
@@ -1401,7 +1924,7 @@ ShellRoot {
                 BarText { text: "Power"; color: Theme.cinnabar; font.pixelSize: 17; height: 30 }
                 Repeater {
                     model: [
-                        { label: "󰌾  Lock", cmd: ["swaylock", "-f"] },
+                        { label: "󰌾  Lock", cmd: [Quickshell.env("HOME") + "/.config/sway/scripts/random-lock.sh"] },
                         { label: "󰍃  Log out of Sway", cmd: ["swaymsg", "exit"] },
                         { label: "󰜉  Restart", cmd: ["systemctl", "reboot"] },
                         { label: "󰐥  Shut down", cmd: ["systemctl", "poweroff"] }

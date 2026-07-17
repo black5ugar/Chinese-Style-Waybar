@@ -1,3 +1,4 @@
 singleton Theme 1.0 Theme.qml
 BarText 1.0 BarText.qml
 InkCard 1.0 InkCard.qml
+WifiField 1.0 WifiField.qml

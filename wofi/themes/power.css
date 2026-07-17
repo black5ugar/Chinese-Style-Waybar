@@ -1,38 +1,44 @@
-/*
- * 水墨 · 电源菜单  —  wofi dmenu style
- * 配合 power-menu.sh 使用
- */
+/* Quickshell Ink — wofi dmenu / power menu */
 
 * {
-  font-family: "LXGW WenKai", "JetBrainsMono Nerd Font Propo", "Noto Serif CJK SC", serif;
+  font-family: "JetBrainsMono Nerd Font Propo", "LXGW WenKai", "Noto Sans CJK SC", sans-serif;
   font-size: 16px;
   color: #1f1c16;
+  text-shadow: none;
   outline: none;
 }
 
 window {
-  background-color: rgba(243, 241, 234, 0.94);
-  border: 1px solid rgba(20, 20, 20, 0.45);
-  border-radius: 4px;
+  margin: 0px;
+  padding: 0px;
+  background-color: rgba(249, 248, 245, 0.96);
+  border: 1px solid rgba(31, 28, 22, 0.18);
+  border-radius: 16px;
+  box-shadow: 0 12px 36px rgba(31, 28, 22, 0.16);
 }
 
 #outer-box {
-  margin: 12px;
+  margin: 0px;
   padding: 14px;
-  background-color: rgba(247, 246, 240, 0.75);
-  border: 1px solid rgba(20, 20, 20, 0.18);
-  border-radius: 2px;
+  background-color: transparent;
+  border: none;
+  border-radius: 16px;
 }
 
-/* dmenu 模式下输入框只用于过滤，弱化处理 */
 #input {
-  margin: 0px 0px 12px 0px;
-  padding: 7px 10px;
-  background-color: rgba(255, 255, 255, 0.42);
-  color: #111111;
-  border: none;
-  border-bottom: 1px solid rgba(20, 20, 20, 0.55);
-  border-radius: 0px;
+  margin: 0px 0px 10px 0px;
+  padding: 9px 12px;
+  background-color: rgba(255, 255, 255, 0.45);
+  color: #1f1c16;
+  caret-color: #b83227;
+  border: 1px solid rgba(31, 28, 22, 0.18);
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+#input:focus {
+  background-color: rgba(255, 255, 255, 0.62);
+  border-color: #b83227;
 }
 
 #inner-box,
@@ -42,24 +48,23 @@ window {
 }
 
 #entry {
-  margin: 4px 0px;
-  padding: 9px 14px;
+  margin: 2px 0px;
+  padding: 9px 11px;
   background-color: transparent;
-  border-radius: 0px;
-  border-left: 3px solid transparent;
+  border: none;
+  border-radius: 10px;
 }
 
-/* 选中：淡墨 + 朱砂左缘 */
 #entry:selected {
-  background-color: rgba(28, 26, 20, 0.10);
-  border-left: 3px solid #b83227;
-}
-
-#entry:selected #text {
-  color: #000000;
+  background-color: rgba(184, 50, 39, 0.10);
 }
 
 #text {
-  color: #202020;
-  margin-left: 6px;
+  margin-left: 5px;
+  color: #1f1c16;
+}
+
+#entry:selected #text {
+  color: #b83227;
+  font-weight: 600;
 }

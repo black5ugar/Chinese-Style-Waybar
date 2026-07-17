@@ -77,6 +77,16 @@ exec_always --no-startup-id qs -c topbar --no-duplicate
 Use `quickshell` in place of `qs` when that is the installed executable. Disable
 the old Waybar autostart entry to avoid showing both bars.
 
+To make `Mod+Left` and `Mod+Right` switch between adjacent workspaces that
+already exist, add this to the Sway configuration and reload Sway:
+
+```text
+include ~/.config/quickshell/topbar/sway-workspace-navigation.conf
+```
+
+The bindings stay on the current output, skip missing workspace numbers, and
+wrap at either end.
+
 ## Development
 
 Run directly from the repository:

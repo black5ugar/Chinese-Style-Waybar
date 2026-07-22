@@ -16,7 +16,7 @@ chosen=$(printf '󰌾  Lock\n󰍃  Logout\n󰜉  Reboot\n󰐥  Shutdown' | wofi 
     --insensitive) || exit 0
 
 case "$chosen" in
-    *Lock)     swaylock -f ;;
+    *Lock)     "$HOME/.config/sway/scripts/random-lock.sh" ;;
     *Logout)   swaymsg exit ;;
     *Reboot)   systemctl reboot ;;
     *Shutdown) systemctl poweroff ;;

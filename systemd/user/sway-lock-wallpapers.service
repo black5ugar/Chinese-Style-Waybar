@@ -1,0 +1,8 @@
+[Unit]
+Description=Download a random SFW wallpaper for Sway lock screen
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.config/sway/scripts/fetch-lock-wallpaper.sh

@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically refresh Sway lock-screen wallpaper cache
+
+[Timer]
+OnStartupSec=30s
+OnUnitInactiveSec=6h
+RandomizedDelaySec=5m
+AccuracySec=1m
+Persistent=true
+Unit=sway-lock-wallpapers.service
+
+[Install]
+WantedBy=timers.target

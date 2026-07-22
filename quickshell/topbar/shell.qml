@@ -1,6 +1,7 @@
 //@ pragma UseQApplication
 
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 import "."
 import Quickshell
@@ -21,6 +22,7 @@ ShellRoot {
     property bool powerOpen: false
     property var powerPopupScreen: null
     readonly property int popupCloseDelay: 2500
+    readonly property int wifiPopupCloseDelay: 6000
     property int memoryPercent: 0
     property string poemText: "山水有清音"
     property string poemTitle: ""
@@ -68,6 +70,19 @@ ShellRoot {
         for (let i = 0; i < networks.length; i++)
             if (networks[i].connected) return networks[i];
         return null;
+    }
+    readonly property var sortedWifiNetworks: {
+        if (!wifiDevice) return [];
+        const networks = wifiDevice.networks.values;
+        const sorted = [];
+        for (let i = 0; i < networks.length; i++) sorted.push(networks[i]);
+        sorted.sort((left, right) => {
+            if (left.connected !== right.connected) return left.connected ? -1 : 1;
+            if (left.signalStrength !== right.signalStrength)
+                return right.signalStrength - left.signalStrength;
+            return left.name.localeCompare(right.name);
+        });
+        return sorted;
     }
     property bool wifiOpen: false
     // Wi-Fi popup state machine: list, credentials, connection and connectivity.
@@ -1271,7 +1286,7 @@ ShellRoot {
         Behavior on implicitHeight { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
         Timer {
-            interval: root.popupCloseDelay
+            interval: root.wifiPopupCloseDelay
             running: wifiPopup.visible && root.wifiStage === "list" && !wifiPopupHover.hovered
             onTriggered: root.closeWifi()
         }
@@ -1343,14 +1358,26 @@ ShellRoot {
                     }
 
                     ListView {
+                        id: wifiNetworkList
                         width: parent.width
                         height: parent.height - 42
                         clip: true
                         spacing: 4
-                        model: root.wifiDevice ? root.wifiDevice.networks : null
+                        boundsBehavior: Flickable.StopAtBounds
+                        model: root.sortedWifiNetworks
+                        ScrollBar.vertical: ScrollBar {
+                            policy: ScrollBar.AsNeeded
+                            width: 5
+                            contentItem: Rectangle {
+                                implicitWidth: 5
+                                radius: width / 2
+                                color: Theme.border
+                            }
+                            background: Item {}
+                        }
                         delegate: Rectangle {
                             required property var modelData
-                            width: ListView.view.width
+                            width: ListView.view.width - 9
                             height: 46
                             radius: 10
                             color: networkHover.containsMouse ? Qt.rgba(0.72, 0.20, 0.15, 0.08) : "transparent"
